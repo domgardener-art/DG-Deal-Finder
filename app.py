@@ -173,36 +173,59 @@ def extract_source_advert(text):
 
 
 REPAIR_RULES=[
-("Camshaft / valvetrain",["needs camshaft","camshaft needs","camshaft fault","camshaft worn","camshaft issue","camshaft problem","camshaft required","requires camshaft","camshaft noisy","camshaft noise"],850,1800),
-("Timing chain",["timing chain rattle","timing chain fault","needs timing chain","timing chain needs"],700,1600),
-("Timing belt",["needs timing belt","needs cambelt","timing belt due","cambelt due"],350,750),
-("Head gasket",["head gasket","headgasket","mixing oil and coolant"],900,2200),
-("Turbo",["turbo fault","turbo failed","needs turbo","turbo needs"],650,1600),
-("Clutch",["clutch slipping","needs clutch","clutch needs"],500,1100),
-("Dual-mass flywheel / clutch",["dual mass","dmf","needs flywheel"],850,1600),
-("Automatic gearbox",["gearbox fault","gearbox issue","transmission fault","gearbox slipping"],1200,3200),
-("DPF",["dpf fault","dpf blocked","blocked dpf","dpf issue"],250,900),
-("EGR",["egr fault","egr issue","needs egr"],250,650),
-("Alternator",["needs alternator","alternator fault","alternator failed"],300,650),
-("Starter motor",["needs starter","starter motor fault","starter failed"],250,550),
-("Air conditioning",["air con not working","aircon not working","a/c not working","ac not working"],150,700),
-("Front brakes",["front brakes needed","needs front brakes","front discs and pads","front pads and discs"],250,500),
-("Rear brakes",["rear brakes needed","needs rear brakes","rear discs and pads","rear pads and discs"],220,450),
-("Brakes",["brakes needed","needs brakes","discs and pads","pads and discs","brakes need doing","brakes require attention","brake judder","brakes judder"],350,700),
-("Tyres - pair",["needs two tyres","2 tyres needed","two tyres needed","pair of tyres"],180,360),
-("Tyres - set",["needs four tyres","4 tyres needed","four tyres needed","needs tyres","tyres needed"],350,700),
-("Wheel bearing",["wheel bearing","bearing noise"],180,400),
-("Suspension",["suspension knock","needs suspension","broken spring","coil spring"],200,650),
-("Battery",["needs battery","battery weak","new battery needed"],100,260)]
+("Camshaft / valvetrain",["needs camshaft","camshaft needs","camshaft fault","camshaft worn","camshaft issue","camshaft problem","camshaft required","requires camshaft","camshaft noisy","camshaft noise","tappet noise","tappets noisy","top end tapping","top end rattle"],850,1800),
+("Timing chain",["timing chain rattle","timing chain fault","needs timing chain","timing chain needs","chain rattle","rattle on startup","rattles on startup","rattle from cold","rattles from cold","rattle when cold"],700,1600),
+("Timing belt",["needs timing belt","needs cambelt","timing belt due","cambelt due","cambelt overdue","timing belt overdue"],350,750),
+("Head gasket / overheating",["head gasket","headgasket","mixing oil and coolant","mayo under cap","mayonnaise under cap","overheating","over heats","overheats","pressurising coolant","pressurizing coolant","bubbles in expansion tank"],900,2200),
+("Turbo",["turbo fault","turbo failed","needs turbo","turbo needs","turbo gone","turbo blown","turbo whistle","turbo whining","no boost","losing boost","boost fault","underboost"],650,1600),
+("Clutch",["clutch slipping","needs clutch","clutch needs","clutch fault","clutch gone","clutch is gone","high biting point","clutch bites high","clutch judder","clutch judders","hard to get into gear"],500,1100),
+("Dual-mass flywheel / clutch",["dual mass","dmf","needs flywheel","flywheel rattle","flywheel noisy","rattle when clutch"],850,1600),
+("Automatic gearbox",["gearbox fault","gearbox issue","transmission fault","gearbox slipping","broken gearbox","gearbox broken","gearbox gone","gearbox has gone","gearbox failed","gearbox failure","needs gearbox","new gearbox needed","gearbox noisy","gearbox noise","gearbox whining","gearbox whine","gearbox crunch","gearbox crunching","crunches gears","won't select gear","wont select gear","not selecting gear","stuck in gear","jumps out of gear","transmission slipping","transmission failed","transmission gone","limp mode gearbox"],1200,3200),
+("Engine internal / knocking",["engine knocking","engine knock","knocking engine","bottom end knock","bottom end knocking","big end knock","big end gone","rod knock","engine rattling","engine rattle","engine seized","seized engine","engine gone","engine blown","blown engine","needs engine","replacement engine needed"],1200,3500),
+("Misfire / running fault",["misfire","misfiring","misfires","running rough","runs rough","rough idle","lumpy idle","lumpy when cold","hesitates","hesitation","stuttering","stutters","down on power","loss of power","losing power"],120,800),
+("Engine management / warning light",["engine management light","eml on","eml light","check engine light","engine light on","warning light on","management light on"],100,650),
+("Oil leak / oil consumption",["oil leak","leaking oil","loses oil","losing oil","uses oil","using oil","burning oil","burns oil","heavy oil consumption","needs topping up with oil"],150,1000),
+("Coolant leak / cooling",["coolant leak","leaking coolant","losing coolant","loses coolant","uses coolant","water leak","radiator leak","expansion tank leak","needs topping up coolant"],150,900),
+("Smoke / exhaust",["blue smoke","white smoke","black smoke","smokes when cold","smokes on startup","smokes under acceleration","smoking engine","excessive smoke"],200,1200),
+("DPF",["dpf fault","dpf blocked","blocked dpf","dpf issue","dpf light","dpf warning","dpf needs cleaning","regeneration fault","won't regenerate","wont regenerate"],250,900),
+("EGR",["egr fault","egr issue","needs egr","egr valve","egr light"],250,650),
+("AdBlue / emissions",["adblue fault","adblue issue","adblue warning","adblue countdown","emissions fault","emissions warning","scr fault","nox sensor"],250,1100),
+("Alternator / charging",["needs alternator","alternator fault","alternator failed","battery light on","not charging","charging fault"],300,650),
+("Starter motor",["needs starter","starter motor fault","starter failed","starter clicking","clicks but won't start","clicks but wont start"],250,550),
+("Starting fault",["won't start","wont start","non starter","non-starter","doesn't start","doesnt start","hard to start","struggles to start","turns over but won't start","cranks but won't start"],150,1200),
+("Air conditioning",["air con not working","aircon not working","a/c not working","ac not working","air con warm","aircon warm","needs regas","needs re-gas"],100,700),
+("Front brakes",["front brakes needed","needs front brakes","front discs and pads","front pads and discs","front brakes need doing","front discs worn","front pads low"],250,500),
+("Rear brakes",["rear brakes needed","needs rear brakes","rear discs and pads","rear pads and discs","rear brakes need doing","rear discs worn","rear pads low"],220,450),
+("Brakes",["brakes needed","needs brakes","discs and pads","pads and discs","brakes need doing","brakes require attention","brake judder","brakes judder","brakes grinding","brake grinding","grinding brakes","squealing brakes","brakes squeal","brake warning light","brakes worn","pads low","discs worn"],350,700),
+("ABS / stability control",["abs light","abs fault","traction control light","esp light","stability control fault"],150,700),
+("Tyres - pair",["needs two tyres","2 tyres needed","two tyres needed","pair of tyres","two bald tyres","2 bald tyres"],180,360),
+("Tyres - set",["needs four tyres","4 tyres needed","four tyres needed","needs tyres","tyres needed","tyres bald","bald tyres","tyres cracked","perished tyres","tyres perished","tyres low"],350,700),
+("Wheel bearing",["wheel bearing","bearing noise","humming from wheel","wheel humming","drone from wheel","wheel bearing humming"],180,400),
+("Suspension",["suspension knock","needs suspension","broken spring","coil spring","knocking suspension","suspension knocking","clunk over bumps","clunks over bumps","knock over bumps","knocks over bumps","spring snapped","snapped spring","shock leaking","leaking shock","bouncy suspension"],200,650),
+("Steering",["steering knock","steering clunk","power steering fault","steering heavy","heavy steering","steering warning light","rack leaking","steering rack"],250,1200),
+("Battery",["needs battery","battery weak","new battery needed","flat battery","battery keeps going flat","battery goes flat"],100,260),
+("Electrical fault",["electrical fault","electrical issue","electrics playing up","intermittent electrical","windows not working","central locking not working","dashboard goes off"],100,900),
+("Parking brake",["handbrake not working","handbrake weak","parking brake fault","electronic parking brake fault","epb fault"],150,650),
+("Exhaust",["exhaust blowing","blowing exhaust","exhaust leak","exhaust broken","needs exhaust","exhaust rattling"],120,700),
+("Catalytic converter",["catalytic converter fault","cat fault","needs catalytic converter","needs cat","catalyst efficiency","cat rattling"],300,1400),
+("Rust / corrosion",["rusty underneath","rust underneath","bad rust","serious rust","corrosion underneath","welding needed","needs welding","sills rusty","rusty sills","subframe corrosion","subframe rusty"],300,1800),
+("Water ingress",["water leak inside","water ingress","wet carpets","damp carpets","boot full of water","water in boot","leaking roof"],100,900),
+("Convertible roof",["roof not working","convertible roof fault","soft top not working","hood not working","roof mechanism fault"],250,1600),
+]
 PREMIUM_BRANDS={"Porsche":1.75,"Ferrari":3.0,"Lamborghini":3.0,"Aston Martin":2.3,"Bentley":2.4,"Maserati":1.9,"Land Rover":1.45,"Jaguar":1.35,"Mercedes-Benz":1.35,"BMW":1.3,"Audi":1.3,"Lexus":1.2,"Volvo":1.15}
 MODEL_MULTIPLIERS={("Porsche","911"):2.15,("Porsche","Cayenne"):1.75,("Porsche","Macan"):1.55,("BMW","M3"):1.65,("BMW","M4"):1.65,("Audi","RS3"):1.65,("Audi","RS4"):1.7,("Ford","Focus"):1.0,("Ford","Fiesta"):0.95,("Dacia","Sandero"):0.85}
 def vehicle_repair_multiplier(make,model,spec=""):
     return max(.75,min(float(MODEL_MULTIPLIERS.get((str(make),str(model)),PREMIUM_BRANDS.get(str(make),1.0))),3.0))
 def _repair_is_already_done(text,term):
     low=text.lower()
+    # Don't penalise explicit negatives such as "no gearbox issues" or "no warning lights".
+    pos=low.find(term)
+    if pos>=0:
+        prefix=low[max(0,pos-18):pos]
+        if re.search(r"\b(no|without|never had|no sign of|no signs of)\s+$",prefix): return True
     for root in [x for x in term.split() if len(x)>=4]:
-        if re.search(rf"(new|recent|recently|just)\s+[^.\n]{{0,35}}{re.escape(root)}[^.\n]{{0,35}}(fitted|replaced|done|changed)",low):return True
-        if re.search(rf"{re.escape(root)}[^.\n]{{0,25}}(has been|was|recently|just)?\s*(fitted|replaced|renewed|changed|done)",low):return True
+        if re.search(rf"(new|recent|recently|just)\s+[^.\n]{{0,45}}{re.escape(root)}[^.\n]{{0,45}}(fitted|replaced|done|changed|renewed|repaired|fixed)",low):return True
+        if re.search(rf"{re.escape(root)}[^.\n]{{0,35}}(has been|was|recently|just)?\s*(fitted|replaced|renewed|changed|done|repaired|fixed)",low):return True
     return False
 def analyse_description_repairs(text,make="",model="",spec=""):
     low=(text or "").lower().strip();mult=vehicle_repair_multiplier(make,model,spec)
@@ -471,6 +494,21 @@ div[data-testid="stMetricValue"]{font-size:1.34rem!important;letter-spacing:-.02
   background:#105638!important;
   color:#FFFFFF!important;
   border-color:#105638!important;
+}
+
+/* V36 readability fixes from mobile testing */
+[data-testid="stAlert"][data-baseweb="notification"] p{color:#10233F!important;font-weight:650!important}
+[data-testid="stAlert"][data-baseweb="notification"]{opacity:1!important}
+.stButton>button[key="new_appraisal_btn"], .stButton>button:has(p:first-child){
+  opacity:1;
+}
+/* Keep secondary action readable against dark navy */
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:last-child .stButton>button{
+  color:#FFFFFF!important;
+}
+[data-testid="stHorizontalBlock"] > [data-testid="column"]:last-child .stButton>button p{
+  color:#FFFFFF!important;
+  opacity:1!important;
 }
 </style>
 """, unsafe_allow_html=True)
