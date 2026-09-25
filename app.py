@@ -336,6 +336,43 @@ def _dg_strip_html(x):
     return re.sub(r"\s+"," ",html.unescape(re.sub(r"<[^>]+>"," ",str(x or "")))).strip()
 
 
+
+DG_CORE_RISK_BANK = [
+ {"make":"Volkswagen","models":["Golf","Polo","Passat","Tiguan"],"fuel":"Diesel","issue":"EGR/DPF emissions-system faults are common buying checks on diesel VWs","severity":"High","ask":"Any EGR, DPF or emissions work, warning lights or forced regenerations? Are there invoices?","check":"Cold start, warning lights, smoke, limp mode and evidence of EGR/DPF work.","cost_low":400,"cost_high":1800},
+ {"make":"Volkswagen","models":["Golf","Polo","Passat","Tiguan"],"fuel":"","issue":"DSG mechatronic/clutch faults are a known risk on DSG-equipped cars","severity":"High","ask":"Has the DSG had clutch, mechatronic or oil-service work?","check":"Check for judder, delayed drive engagement, harsh shifts and DSG service evidence.","cost_low":800,"cost_high":2500,"gearbox_terms":["dsg","automatic"]},
+ {"make":"Audi","models":["A1","A3","A4","A5","A6"],"fuel":"Diesel","issue":"Diesel emissions, EGR/DPF and related intake faults are important checks","severity":"High","ask":"Any EGR, DPF, intake or emissions-system repairs or warning lights?","check":"Check cold start, smoke, warning lights, limp mode and invoices.","cost_low":400,"cost_high":1800},
+ {"make":"Audi","models":["A3","A4","A5","A6"],"fuel":"","issue":"Automatic gearbox/mechatronic servicing and faults need checking","severity":"High","ask":"Has the automatic gearbox had its scheduled oil service or any mechatronic/clutch repairs?","check":"Test from cold and hot for judder, hesitation and harsh engagement.","cost_low":800,"cost_high":3000,"gearbox_terms":["automatic","s tronic","multitronic","dsg"]},
+ {"make":"BMW","models":["1 Series","2 Series","3 Series","4 Series","5 Series","X1","X3"],"fuel":"Diesel","issue":"Timing-chain condition and diesel emissions hardware are key BMW diesel buying checks","severity":"High","ask":"Any timing-chain, EGR, DPF or turbo work? Are there invoices or recall records?","check":"Listen from cold for chain noise; check EGR/DPF warnings, smoke and service history.","cost_low":700,"cost_high":2500},
+ {"make":"Peugeot","models":["208","2008","308","3008","5008"],"fuel":"Petrol","issue":"PureTech petrol engines can require careful timing-belt/oil-system history checks","severity":"High","ask":"Has the timing belt been inspected/replaced and is the correct oil documented?","check":"Verify engine type, belt history, oil-pressure warnings and service invoices.","cost_low":500,"cost_high":1800},
+ {"make":"Peugeot","models":["208","2008","308","3008","5008"],"fuel":"Diesel","issue":"BlueHDi AdBlue/SCR faults and emissions-system repairs are common buying checks","severity":"High","ask":"Any AdBlue tank, injector, NOx sensor, EGR or DPF work?","check":"Check countdown/emissions warnings, AdBlue history and invoices.","cost_low":500,"cost_high":1500},
+ {"make":"Citroen","models":["C3","C4","C5 Aircross","Berlingo"],"fuel":"Petrol","issue":"PureTech petrol engines can require careful timing-belt/oil-system history checks","severity":"High","ask":"Has the timing belt been inspected/replaced and is the correct oil documented?","check":"Verify engine type, belt history, oil-pressure warnings and service invoices.","cost_low":500,"cost_high":1800},
+ {"make":"Citroen","models":["C3","C4","C5 Aircross","Berlingo"],"fuel":"Diesel","issue":"BlueHDi AdBlue/SCR and emissions-system faults are important checks","severity":"High","ask":"Any AdBlue tank, NOx sensor, EGR or DPF work?","check":"Check emissions warnings, countdown messages and repair invoices.","cost_low":500,"cost_high":1500},
+ {"make":"Ford","models":["Fiesta","Focus","EcoSport","Puma"],"fuel":"Petrol","issue":"EcoBoost timing-belt/cooling-system history can be a major buying risk on affected engines","severity":"High","ask":"Is it an EcoBoost, and if so has the timing belt and cooling-system work been documented?","check":"Confirm engine family first; inspect belt/service evidence, coolant level and overheating history.","cost_low":600,"cost_high":2200},
+ {"make":"Ford","models":["Fiesta","Focus","Kuga"],"fuel":"","issue":"PowerShift automatic gearbox faults are a significant risk on affected cars","severity":"High","ask":"Is it PowerShift, and has the gearbox had clutch/mechatronic repairs and scheduled servicing?","check":"Check for judder, hesitation, warning messages and repair invoices.","cost_low":900,"cost_high":2500,"gearbox_terms":["automatic","powershift"]},
+ {"make":"Nissan","models":["Qashqai","Juke","Micra","X-Trail"],"fuel":"","issue":"CVT condition is a major buying check on CVT-equipped Nissans","severity":"High","ask":"Is it CVT, and has the transmission fluid been serviced or the gearbox repaired?","check":"Check for flare, shudder, whining, delayed engagement and gearbox warnings.","cost_low":1200,"cost_high":3500,"gearbox_terms":["automatic","cvt"]},
+ {"make":"Land Rover","models":["Range Rover Evoque","Discovery Sport","Range Rover Sport","Discovery"],"fuel":"Diesel","issue":"Diesel timing-chain, DPF/EGR and oil-dilution history can create expensive exposure","severity":"High","ask":"Any timing-chain, DPF, EGR, turbo or oil-dilution related work?","check":"Cold-start chain noise, oil level/history, emissions warnings and invoices.","cost_low":900,"cost_high":3500},
+ {"make":"Jaguar","models":["XE","XF","F-Pace","E-Pace"],"fuel":"Diesel","issue":"Ingenium diesel timing-chain and emissions-system history are important buying checks","severity":"High","ask":"Any timing-chain, DPF, EGR, turbo or oil-dilution related work?","check":"Listen from cold, inspect service intervals/oil history and check emissions warnings.","cost_low":900,"cost_high":3500},
+ {"make":"Mercedes-Benz","models":["A-Class","B-Class","C-Class","E-Class","CLA","GLA"],"fuel":"Diesel","issue":"Diesel emissions hardware, AdBlue/NOx and DPF/EGR faults can be costly","severity":"High","ask":"Any AdBlue, NOx sensor, EGR, DPF or emissions repairs?","check":"Check warning messages, limp mode, emissions history and invoices.","cost_low":500,"cost_high":1800},
+ {"make":"Honda","models":["Civic","Accord","CR-V"],"fuel":"Diesel","issue":"Clutch/dual-mass flywheel and diesel emissions condition are worthwhile checks","severity":"High","ask":"Any clutch/DMF, EGR or DPF work?","check":"Check clutch bite/slip, DMF noise, smoke and emissions warnings.","cost_low":700,"cost_high":1800},
+]
+
+def dg_core_risk_matches(make,model,fuel,gearbox):
+    mk=str(make or "").strip().lower(); md=str(model or "").strip().lower()
+    fu=str(fuel or "").strip().lower(); gb=str(gearbox or "").strip().lower()
+    out=[]
+    for r in DG_CORE_RISK_BANK:
+        if str(r["make"]).lower()!=mk: continue
+        if not any(x.lower()==md or x.lower() in md or md in x.lower() for x in r["models"]): continue
+        if r.get("fuel") and str(r["fuel"]).lower()!=fu: continue
+        terms=[str(x).lower() for x in r.get("gearbox_terms",[])]
+        if terms and not any(t in gb for t in terms): continue
+        q=dict(r)
+        q.update({"year_from":"","year_to":"","engine_terms":"","source":"DG core UK buying-risk bank",
+                  "source_url":"https://www.caradvertcheck.co.uk/car-data",
+                  "evidence_type":"broader model/fuel buying risk — confirm applicability","confidence":"Low"})
+        out.append(q)
+    return out
+
 def dg_model_fault_page(make,model,year,engine,fuel,gearbox):
     """Read a free public UK model-fault page directly; return sourced issues, never guessed faults."""
     import re as _re
@@ -456,6 +493,10 @@ def dg_web_research(make,model,year,engine,fuel,gearbox):
           "evidence_type":"live structured web research","confidence":"Medium" if len(matched)>=2 else "Low"})
 
     combined=direct_issues+learned
+    if not combined:
+        combined=dg_core_risk_matches(make,model,fuel,gearbox)
+        if combined:
+            _dg_match_level="model_fuel"
     seen=set(); final=[]
     for row in combined:
         key=" ".join(str(row.get("issue","")).lower().split())
@@ -548,7 +589,7 @@ def assess_seller_description(text, confirmed=None):
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V93 broader intelligence + cleaner flow")
+st.caption("DG Deal Finder • V94 resilient risk bank")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3716,7 +3757,7 @@ with tabs[0]:
         _status_label=_dg_research_status.replace("_"," ").title()
         _match_text={"exact":"Exact vehicle","model_fuel":"Model + fuel type","model":"Model-level"}.get(_dg_match_level,"Exact vehicle")
         with st.expander("Research details"):
-            st.markdown(f"**Status:** {_status_label}  \\n**Coverage:** {_match_text}  \\n**Findings:** {len(_dg_live_intel)}")
+            st.markdown(f"**Status:** {_status_label}  \n**Coverage:** {_match_text}  \n**Findings:** {len(_dg_live_intel)}")
         if _dg_live_intel: st.success(f"DG found and cross-checked {len(_dg_live_intel)} model-specific buying issue(s).")
         elif _dg_intel: st.info("Using DG’s existing sourced buying-intelligence bank.")
         elif _dg_research_status=="research_unavailable": st.warning("Live research was unavailable. DG has not treated that as no known issues.")
@@ -3737,8 +3778,11 @@ with tabs[0]:
             if _dg_total_high>0:
                 st.markdown(f'<div class="dg-intel-card"><div class="dg-issue">Potential work exposure</div><div class="dg-cost">£{_dg_total_low:,.0f}–£{_dg_total_high:,.0f}</div><div class="dg-row">Planning allowance: <b>£{_dg_planning:,.0f}</b></div><div class="dg-row" style="font-size:.82rem;color:#667085">Risk exposure only — confirm work before deducting it from the deal.</div></div>',unsafe_allow_html=True)
         else:
-            with st.expander("General seller questions"):
-                st.markdown("- What major maintenance or repairs have been done, and are there invoices?\n- Any warning lights, intermittent faults, oil/coolant use or starting issues?\n- When were gearbox/transmission and scheduled fluids last serviced?\n- Any recent tyres, brakes, suspension, battery or air-conditioning work?")
+            st.markdown("""<div class="dg-intel-card"><div class="dg-issue">General seller questions</div>
+<div class="dg-row">• Major maintenance or repairs — are there invoices?</div>
+<div class="dg-row">• Warning lights, intermittent faults, oil/coolant use or starting issues?</div>
+<div class="dg-row">• When were gearbox/transmission and scheduled fluids last serviced?</div>
+<div class="dg-row">• Recent tyres, brakes, suspension, battery or air-conditioning work?</div></div>""",unsafe_allow_html=True)
         appraisal_record={"date":datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),"display_name":(reg.strip().upper() if str(reg or "").strip() else vehicle),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"description_repair_allowance":detected_repair_cost,"description_repair_items":"; ".join(x["issue"] for x in repair_intel.get("items",[])),"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
         st.session_state["current_appraisal_record"]=appraisal_record
         # Persist repair findings as part of the RESULT, not only as pre-submit form text.
