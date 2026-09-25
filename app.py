@@ -1860,8 +1860,9 @@ with tabs[0]:
         official_year_specs,[],verified_dg_specs,[],tax_specs if taxonomy_verified else [],
         [],taxonomy_verified
     )
-    spec_options=safe_specs
+    spec_options=safe_specs if safe_specs else _merge_unique(candidate_specs)
     spec_is_year_constrained=bool(year_spec_evidence)
+    spec_uses_fallback=not bool(safe_specs) and bool(spec_options)
 
     if spec_is_year_constrained:
         st.caption(f"Spec list filtered to {selected_year} UK registrations — {len(spec_options)} valid choice(s).")
@@ -1905,24 +1906,25 @@ with tabs[0]:
         [],official_year_engines,[],verified_dg_engines,[],
         tax_engines if taxonomy_verified else [],taxonomy_verified
     )
-    engine_options=safe_engines
+    engine_options=safe_engines if safe_engines else _merge_unique(candidate_engines)
     engine_is_year_constrained=bool(year_engine_evidence)
+    engine_uses_fallback=not bool(safe_engines) and bool(engine_options)
 
     if engine_is_year_constrained:
         st.caption(f"Engine list filtered to {selected_year} UK registrations — {len(engine_options)} valid choice(s).")
     elif selected_model:
-        st.caption("No year-specific official engine evidence available; DG fallback choices are shown and will be checked before valuation.")
+        st.caption("Year-specific official engine evidence is limited. Catalogue choices remain selectable and are checked before valuation.")
 
-    coverage_status=catalogue_confidence(spec_options,engine_options)
-    if selected_model and coverage_status=="unverified":
-        st.warning(f"NO VERIFIED {selected_year} SPEC/ENGINE DATA — DG has hidden broad fallback choices rather than risk showing an engine from the wrong year.")
+    coverage_status=catalogue_confidence(safe_specs,safe_engines)
+    if selected_model and (spec_uses_fallback or engine_uses_fallback):
+        st.info(f"{selected_year} CATALOGUE FALLBACK — choices remain selectable, but DG will verify the chosen engine before valuation.")
     elif selected_model and coverage_status=="partial":
-        st.warning(f"PARTIAL {selected_year} VEHICLE DATA — only evidenced choices are shown; DG will not invent the missing spec/engine.")
+        st.warning(f"PARTIAL {selected_year} VEHICLE DATA — only evidenced choices are shown where available.")
     elif selected_model:
-        st.success(f"{selected_year} SPEC/ENGINE FILTER ACTIVE — only year-evidenced choices are shown.")
+        st.success(f"{selected_year} SPEC/ENGINE FILTER ACTIVE — year-evidenced choices are prioritised.")
 
     selected_engine=st.selectbox("Engine / powertrain",["— Choose engine —"]+engine_options,
-        disabled=not bool(selected_model) or not bool(engine_options))
+        disabled=not bool(selected_model))
     if selected_engine.startswith("—"): selected_engine=""
 
     if taxonomy_verified:
@@ -2216,7 +2218,7 @@ with tabs[0]:
                 with st.expander("Questions to ask the seller"):
                     for question in description_risk["questions"]: st.write("• "+question)
             st.caption("This screens seller wording for risk and contradictions. Seller claims remain unverified; it does not replace inspection, diagnostics or provenance checks.")
-        go=st.form_submit_button("ANALYSE DEAL  →",use_container_width=True,disabled=bool(selected_model) and (not spec_options or not engine_options))
+        go=st.form_submit_button("ANALYSE DEAL  →",use_container_width=True)
     if go:
         # Safety gate: never produce a valuation from an engine/year combination that
         # we cannot verify. This prevents a plausible-looking value for the wrong derivative.
@@ -2228,7 +2230,7 @@ with tabs[0]:
                 official_catalogue,selected_make,selected_model,selected_year,
                 selected_fuel,selected_spec,selected_engine
             ) if selected_make and selected_model and selected_engine else {"status":"unavailable","reason":"Make, model and engine must be selected."}
-        valuation_blocked=combo_check.get("status")=="blocked"
+        valuation_blocked=combo_check.get("status")!="verified"
         if valuation_blocked:
             st.session_state["current_appraisal_ready"]=False
             st.session_state["current_appraisal_record"]=None
