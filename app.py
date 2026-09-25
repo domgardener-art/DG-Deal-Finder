@@ -673,26 +673,38 @@ def _dft_number(series):
                          .str.replace("[x]","0",regex=False).str.replace("[z]","0",regex=False),
                          errors="coerce").fillna(0)
 
-@st.cache_data(ttl=86400,show_spinner=False)
+@st.cache_data(ttl=21600,show_spinner=False)
+def _download_official_uk_catalogue():
+    """Successful downloads are cached. Failures raise and therefore are NOT cached."""
+    req=Request(DFT_UK_CATALOGUE_URL,headers={
+        "User-Agent":"Mozilla/5.0 DG-Deal-Finder",
+        "Accept":"text/csv,text/plain,*/*"
+    })
+    with urlopen(req,timeout=20) as response:
+        raw=response.read()
+    if len(raw)<1000:
+        raise ValueError("Official catalogue download was unexpectedly small")
+    df=pd.read_csv(BytesIO(raw),low_memory=False)
+    required={"BodyType","Make","GenModel","Model","Fuel","EngineSizeSimple","EngineSizeDesc"}
+    if not required.issubset(df.columns):
+        raise ValueError("Official catalogue schema did not match expected DfT fields")
+    year_cols=[c for c in df.columns if str(c).strip().isdigit() and 2000<=int(str(c).strip())<=2035]
+    keep=list(required)+year_cols
+    df=df[keep].copy()
+    df=df[df["BodyType"].astype(str).str.strip().str.lower().eq("cars")]
+    for c in ["Make","GenModel","Model","Fuel","EngineSizeDesc"]:
+        df[c]=df[c].fillna("").astype(str).str.strip()
+    df["EngineSizeSimple"]=pd.to_numeric(df["EngineSizeSimple"],errors="coerce")
+    if df.empty:
+        raise ValueError("Official catalogue contained no car rows")
+    return df
+
 def load_official_uk_catalogue():
-    """Load the official UK bulk catalogue once; return a compact car-only frame."""
+    """Never cache a failed download. Retry on the next Streamlit rerun."""
     try:
-        req=Request(DFT_UK_CATALOGUE_URL,headers={"User-Agent":"DG-Deal-Finder/1.0"})
-        with urlopen(req,timeout=35) as response:
-            raw=response.read()
-        df=pd.read_csv(BytesIO(raw),low_memory=False)
-        needed=[c for c in ["BodyType","Make","GenModel","Model","Fuel","EngineSizeSimple","EngineSizeDesc"] if c in df.columns]
-        year_cols=[c for c in df.columns if str(c).strip().isdigit() and 2000<=int(str(c).strip())<=2035]
-        df=df[needed+year_cols].copy()
-        if "BodyType" in df.columns:
-            df=df[df["BodyType"].astype(str).str.lower().eq("cars")]
-        for c in ["Make","GenModel","Model","Fuel","EngineSizeDesc"]:
-            if c in df.columns: df[c]=df[c].fillna("").astype(str).str.strip()
-        if "EngineSizeSimple" in df.columns:
-            df["EngineSizeSimple"]=pd.to_numeric(df["EngineSizeSimple"],errors="coerce")
-        return df
-    except Exception:
-        return pd.DataFrame()
+        return _download_official_uk_catalogue(), ""
+    except Exception as e:
+        return pd.DataFrame(), f"{type(e).__name__}: {e}"
 
 def official_uk_makes(df):
     if df is None or df.empty or "Make" not in df.columns:return []
@@ -1670,7 +1682,7 @@ with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG buying desk</div><div class="hero">Appraise a vehicle</div><div class="sub">Vehicle, market, condition and deal risk — one buying decision.</div></div>',unsafe_allow_html=True)
     st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
     st.caption("Choose make, year and model. DG uses its cached official UK catalogue first, with live/API data only as enrichment.")
-    official_catalogue=load_official_uk_catalogue()
+    official_catalogue,official_catalogue_error=load_official_uk_catalogue()
     catalogue_makes=official_uk_makes(official_catalogue)
     make_options=_merge_unique(UK_MAKES,catalogue_makes)
     a,b=st.columns(2)
@@ -1730,7 +1742,10 @@ with tabs[0]:
     taxonomy_verified=bool(taxonomy)
     official_catalogue_loaded=not official_catalogue.empty
     if not official_catalogue_loaded:
-        st.caption("Official UK bulk catalogue is temporarily unavailable; DG fallback and enrichment sources are still active.")
+        st.warning("UK vehicle catalogue connection failed. DG will retry automatically when you change a selection. Year-locking is temporarily unavailable.")
+        if st.button("RETRY UK VEHICLE CATALOGUE",key="retry_official_catalogue",use_container_width=True):
+            _download_official_uk_catalogue.clear()
+            st.rerun()
 
     # Fuel first: this immediately removes petrol/diesel/hybrid/EV derivatives and engines
     # that cannot belong to the selected fuel type for the exact chosen year.
@@ -1758,6 +1773,10 @@ with tabs[0]:
     )
     spec_options=filter_specs_to_official_year(candidate_specs,official_year_specs)
     spec_is_year_constrained=bool(official_year_specs)
+    if official_catalogue_loaded and not official_year_specs:
+        # The official catalogue loaded successfully but has no year row for this car:
+        # don't leak broad model-level DG specs from other years into a supposedly safe selector.
+        spec_options=_merge_unique(tax_specs if taxonomy_verified else [])
     if spec_is_year_constrained:
         st.caption(f"Spec list filtered to {selected_year} UK registrations — {len(spec_options)} valid choice(s).")
 
@@ -1794,6 +1813,10 @@ with tabs[0]:
     )
     engine_options=filter_engines_to_official_year(candidate_engines,official_year_engines)
     engine_is_year_constrained=bool(official_year_engines)
+    if official_catalogue_loaded and not official_year_engines:
+        # Same safety rule for engines: no broad cross-year fallback when the official
+        # catalogue positively has no engine evidence for this selected year/spec.
+        engine_options=_merge_unique(tax_engines if taxonomy_verified else [])
     if engine_is_year_constrained:
         st.caption(f"Engine list filtered to {selected_year} UK registrations — {len(engine_options)} valid choice(s).")
     elif selected_model:
@@ -1833,7 +1856,7 @@ with tabs[0]:
         if taxonomy_verified:
             st.success("Compatibility verified by vehicle taxonomy — incompatible engine, fuel and gearbox choices are removed.")
         else:
-            st.info("No derivative-level taxonomy record was returned for this exact vehicle/year. DG merges live-advert choices with its model fallback so a thin market sample cannot hide valid engines/specs; manual override remains available.")
+            st.caption("Exact derivative data is limited for this vehicle/year. DG will not treat broad cross-year fallback choices as verified.")
     cat_mileage=st.number_input("Mileage",0,500000,0,1000,key="catalogue_mileage")
     st.markdown('<div class="section">Source advert</div>',unsafe_allow_html=True)
     source_advert=st.text_area("Paste advert / description",key="source_advert_text",placeholder="Paste the Marketplace or other advert text here. Include its link if you have it.",help="DG keeps the seller wording as context. Confirm the important facts in the appraisal fields.")
