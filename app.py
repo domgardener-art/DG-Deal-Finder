@@ -301,7 +301,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V73 stable appraisal")
+st.caption("DG Deal Finder • V74 result-flow fix")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3018,7 +3018,16 @@ with tabs[0]:
                     if _dg_existing_value <= 0:
                         _dg_rescue=robust_market_value(comps, selected_year, mileage, selected_make, selected_model, asking)
                         if _dg_rescue["value"] > 0:
-                            market_estimate={"market":_dg_rescue["value"],"low":_dg_rescue["low"],"high":_dg_rescue["high"],"count":_dg_rescue["count"]}
+                            market_estimate={"market":float(_dg_rescue["value"]),"retail":float(_dg_rescue["value"]),
+                                             "value":float(_dg_rescue["value"]),"average":float(_dg_rescue["value"]),
+                                             "low":float(_dg_rescue.get("low") or _dg_rescue["value"]),
+                                             "high":float(_dg_rescue.get("high") or _dg_rescue["value"]),
+                                             "count":int(_dg_rescue.get("count") or 1),
+                                             "confidence":_dg_rescue.get("confidence","Low"),
+                                             "evidence":_dg_rescue.get("evidence","Current UK asking-price comparables")}
+                            market_retail=float(_dg_rescue["value"])
+                            st.session_state["market_retail"]=market_retail
+                            st.session_state["market_estimate"]=market_estimate
                             st.info(f'Market rescue used: {_dg_rescue["evidence"]} · confidence {_dg_rescue["confidence"]}')
                         else:
                             st.warning("FREE MARKET DATA INSUFFICIENT — enter your own realistic retail estimate below. DG will still calculate the deal.")
@@ -3116,6 +3125,10 @@ with tabs[0]:
             _dg_render_market=float(market_retail or 0)
         except Exception:
             _dg_render_market=0.0
+        _dg_final_value=float(market_retail or (market_estimate or {}).get("retail",0) or (market_estimate or {}).get("market",0) or (market_estimate or {}).get("value",0) or (market_estimate or {}).get("average",0) or 0)
+        if _dg_final_value>0:
+            market_retail=_dg_final_value
+
         if _dg_render_market <= 0:
             st.error("NO USABLE MARKET VALUATION — no commercial recommendation calculated.")
             try:
