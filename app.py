@@ -102,11 +102,11 @@ def safe_market_snapshot(market, fallback_retail=0):
     if not isinstance(market,dict):
         return {"count":0,"low":fallback,"high":fallback,"rows":[]}
     def num(key,default):
-        try: return float(market.get(key,default) or default)
+        try: return float(safe_market_snapshot(market).get(key,default) or default)
         except (TypeError,ValueError,AttributeError): return float(default)
-    try: count=int(market.get("count",0) or 0)
+    try: count=int(safe_market_snapshot(market).get("count",0) or 0)
     except (TypeError,ValueError,AttributeError): count=0
-    rows=market.get("rows",[])
+    rows=safe_market_snapshot(market).get("rows",[])
     if not isinstance(rows,list): rows=[]
     return {"count":max(0,count),"low":num("low",fallback),"high":num("high",fallback),"rows":rows}
 
@@ -304,6 +304,56 @@ input::placeholder, textarea::placeholder {
   input{min-height:46px !important;font-size:16px !important;}
   [data-testid="stNumberInput"] button{width:46px !important;}
   .stTextInput,.stNumberInput,.stSelectbox,.stTextArea{margin-bottom:.2rem !important;}
+}
+
+
+/* V30 professional mobile buying-desk UI — large, thumb-friendly controls */
+:root{
+  --dg-navy:#071A2F; --dg-navy2:#102A43; --dg-blue:#1267D6; --dg-blue2:#0B57B7;
+  --dg-bg:#F2F5F8; --dg-card:#FFFFFF; --dg-line:#D9E1E8; --dg-text:#122033; --dg-muted:#66788A;
+}
+.stApp,[data-testid="stAppViewContainer"],[data-testid="stMain"]{background:var(--dg-bg)!important}
+.block-container{max-width:820px!important;padding-bottom:7rem!important}
+.dg-top{background:linear-gradient(135deg,var(--dg-navy),var(--dg-navy2))!important;padding:18px 20px 20px!important;border-bottom:4px solid var(--dg-blue)!important;box-shadow:0 5px 18px rgba(7,26,47,.16)!important}
+.dg-logo{font-size:1.18rem!important;letter-spacing:.01em!important}.dg-tag{font-size:.76rem!important;color:#C8D5E3!important}
+.dg-wrap{padding-left:16px!important;padding-right:16px!important}.dg-hero{padding:18px 0 10px!important}.eyebrow{font-size:.69rem!important;letter-spacing:.12em!important}.hero{font-size:1.72rem!important;line-height:1.08!important}.sub{font-size:.9rem!important;max-width:620px}
+.section{font-size:1.12rem!important;margin:24px 0 10px!important;letter-spacing:-.015em!important}
+.card{border-radius:16px!important;border:1px solid var(--dg-line)!important;box-shadow:0 3px 12px rgba(20,40,65,.06)!important;padding:16px!important}
+/* App-like segmented top navigation */
+.stTabs [data-baseweb="tab-list"]{position:sticky!important;top:0!important;z-index:50!important;display:grid!important;grid-template-columns:repeat(4,1fr)!important;gap:6px!important;background:rgba(242,245,248,.97)!important;padding:10px 12px!important;border:0!important;backdrop-filter:blur(8px)!important}
+.stTabs [data-baseweb="tab"]{height:52px!important;border-radius:12px!important;background:#E6ECF2!important;border:1px solid transparent!important;padding:0 5px!important}
+.stTabs [data-baseweb="tab"] p{font-size:.72rem!important;color:#425466!important;font-weight:900!important;letter-spacing:.025em!important}
+.stTabs [aria-selected="true"]{background:var(--dg-navy)!important;box-shadow:0 3px 8px rgba(7,26,47,.18)!important}.stTabs [aria-selected="true"] p{color:#fff!important}
+/* Big BCA-style action buttons */
+.stButton>button,.stFormSubmitButton>button,.stDownloadButton>button,.stLinkButton>a{
+ min-height:56px!important;border-radius:13px!important;font-size:.92rem!important;font-weight:900!important;letter-spacing:.025em!important;border:1px solid #C9D4DF!important;box-shadow:0 2px 6px rgba(18,32,51,.08)!important;transition:.12s ease!important
+}
+.stButton>button:hover,.stDownloadButton>button:hover{border-color:var(--dg-blue)!important;color:var(--dg-blue)!important;transform:translateY(-1px)}
+.stFormSubmitButton>button{min-height:62px!important;background:linear-gradient(180deg,var(--dg-blue),var(--dg-blue2))!important;color:#fff!important;border:0!important;font-size:1rem!important;box-shadow:0 5px 14px rgba(18,103,214,.25)!important}
+.stFormSubmitButton>button:active{transform:scale(.99)!important}
+/* Form controls as large app tiles */
+[data-testid="stWidgetLabel"] p{font-size:.79rem!important;color:#34495E!important;font-weight:850!important}
+[data-baseweb="input"],[data-baseweb="textarea"],[data-baseweb="select"]>div{border:1px solid #C9D4DF!important;border-radius:12px!important;background:#fff!important;box-shadow:0 1px 3px rgba(18,32,51,.03)!important}
+[data-baseweb="select"]>div{min-height:54px!important}input{min-height:52px!important}textarea{border-radius:12px!important;min-height:116px!important}
+[data-testid="stNumberInput"] button{min-height:52px!important;min-width:48px!important}
+/* Metrics/results become strong tiles */
+div[data-testid="stMetric"]{border-radius:15px!important;border:1px solid var(--dg-line)!important;padding:14px 15px!important;box-shadow:0 3px 10px rgba(20,40,65,.055)!important}
+div[data-testid="stMetricValue"]{font-size:1.34rem!important;letter-spacing:-.025em!important}
+/* Expanders look like tappable menu rows */
+[data-testid="stExpander"]{background:#fff!important;border:1px solid var(--dg-line)!important;border-radius:13px!important;overflow:hidden!important;margin:.4rem 0!important;box-shadow:0 2px 7px rgba(20,40,65,.04)!important}
+[data-testid="stExpander"] summary{min-height:54px!important;font-weight:800!important;padding:0 14px!important}
+/* Alerts */
+[data-testid="stAlert"]{border-radius:13px!important;border-width:1px!important;padding:13px 14px!important}
+/* Make radio/checkbox/toggle targets easier to hit */
+[data-testid="stCheckbox"], [data-testid="stRadio"]{background:#fff;border-radius:12px;padding:6px 10px}
+/* Desktop: keep clean single-column buying desk */
+@media(min-width:700px){.dg-wrap{padding-left:22px!important;padding-right:22px!important}.stTabs [data-baseweb="tab-list"]{padding-left:18px!important;padding-right:18px!important}}
+@media(max-width:640px){
+ .block-container{padding-bottom:8rem!important}.dg-top{padding:15px 16px 17px!important}.hero{font-size:1.55rem!important}.sub{font-size:.84rem!important}
+ .stTabs [data-baseweb="tab-list"]{gap:5px!important;padding:8px!important}.stTabs [data-baseweb="tab"]{height:50px!important}.stTabs [data-baseweb="tab"] p{font-size:.66rem!important}
+ .stButton>button,.stDownloadButton>button,.stLinkButton>a{min-height:58px!important}.stFormSubmitButton>button{min-height:64px!important;font-size:1.02rem!important}
+ [data-baseweb="select"]>div,input{min-height:54px!important;font-size:16px!important}
+ div[data-testid="stMetric"]{padding:13px!important}
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1103,10 +1153,10 @@ def trend_svg():
 
 source_advert=st.session_state.get("source_advert_text","")
 source_info={}
-tabs=st.tabs(["SOURCE","MARKET","DEALS","RULES"])
+tabs=st.tabs(["APPRAISE","MARKET","DEALS","SETTINGS"])
 
 with tabs[0]:
-    st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Stock appraisal</div><div class="hero">Is it worth buying?</div><div class="sub">Appraise a car against your target margin before you message the seller.</div></div>',unsafe_allow_html=True)
+    st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG buying desk</div><div class="hero">Appraise a vehicle</div><div class="sub">Vehicle, market, condition and deal risk — one buying decision.</div></div>',unsafe_allow_html=True)
     st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
     st.caption("Choose make, year and model from built-in lists. Model options update instantly — no API key required.")
     a,b=st.columns(2)
@@ -1235,7 +1285,7 @@ with tabs[0]:
         market=None
         st.session_state["market_estimate"]=None
     if market:
-        market_count=int(market.get("count",0) or 0)
+        market_count=int(safe_market_snapshot(market).get("count",0) or 0)
         st.metric("Est. retail",f'£{st.session_state.get("market_retail",0):,.0f}')
         if market_count>=2:
             c1,c2=st.columns(2)
@@ -1246,16 +1296,16 @@ with tabs[0]:
             st.caption(f'Based on 1 close current asking-price comparable at £{market["low"]:,.0f}. DG will not present a low/high range from one advert.')
         else:
             st.caption("No usable close comparable count returned. Treat the estimate cautiously.")
-        chosen_bits=[x for x in [market.get("engine"),market.get("fuel"),market.get("gearbox"),market.get("spec")] if x]
-        if chosen_bits: st.caption("Filtered toward: "+" · ".join(chosen_bits)+f' · {market.get("selector_match_count",0)} matching advert(s) before closest-car ranking.')
-        if market.get("count",0)<5:
-            st.warning(f'Only {market.get("count",0)} suitable listing(s) found. Treat this average as low-confidence.')
+        chosen_bits=[x for x in [safe_market_snapshot(market).get("engine"),safe_market_snapshot(market).get("fuel"),safe_market_snapshot(market).get("gearbox"),safe_market_snapshot(market).get("spec")] if x]
+        if chosen_bits: st.caption("Filtered toward: "+" · ".join(chosen_bits)+f' · {safe_market_snapshot(market).get("selector_match_count",0)} matching advert(s) before closest-car ranking.')
+        if safe_market_snapshot(market).get("count",0)<5:
+            st.warning(f'Only {safe_market_snapshot(market).get("count",0)} suitable listing(s) found. Treat this average as low-confidence.')
         else:
             st.caption(f'Observed asking range: £{market["low"]:,.0f}–£{market["high"]:,.0f}. Average is based only on the displayed comparable sample.')
-        with st.expander(f'Similar cars currently advertised ({len(market.get("rows",[]))})'):
-            if not market.get("rows"):
+        with st.expander(f'Similar cars currently advertised ({len(safe_market_snapshot(market).get("rows",[]))})'):
+            if not safe_market_snapshot(market).get("rows"):
                 st.info("The market service returned price guidance but no individual comparable adverts for this search.")
-            for i,car in enumerate(market.get("rows",[])[:10],1):
+            for i,car in enumerate(safe_market_snapshot(market).get("rows",[])[:10],1):
                 price=_num(car,"price","asking_price","askingPrice") or 0
                 miles=_num(car,"mileage","miles","odometer") or 0
                 yr=int(_num(car,"year","registration_year","registrationYear") or 0)
@@ -1406,8 +1456,10 @@ with tabs[0]:
                 with st.expander("Questions to ask the seller"):
                     for question in description_risk["questions"]: st.write("• "+question)
             st.caption("This screens seller wording for risk and contradictions. Seller claims remain unverified; it does not replace inspection, diagnostics or provenance checks.")
-        go=st.form_submit_button("ANALYSE DEAL",use_container_width=True)
+        go=st.form_submit_button("ANALYSE DEAL  →",use_container_width=True)
     if go:
+        # Normalize any stale Streamlit state before result rendering.
+        market = safe_market_snapshot(st.session_state.get("market_estimate"))
         fresh_market=None
         if selected_make and selected_model:
             try:
@@ -1429,6 +1481,7 @@ with tabs[0]:
                         st.session_state["market_retail"]=int(round(fresh_market["retail"]/50)*50)
             except Exception:
                 fresh_market=None
+        market = safe_market_snapshot(fresh_market if fresh_market else st.session_state.get("market_estimate"))
         live_retail=float(st.session_state.get("market_retail",0) or 0) if fresh_market else 0.0
         appraisal_retail=float(retail or live_retail or 0)
         effective_mot_history_cost,mot_history_weight=weighted_mot_history_cost(mot_notes_cost,mot_months)
@@ -1546,7 +1599,7 @@ with tabs[0]:
         # Component risks are derived here so the UI cannot reference undefined legacy names.
         # Self-contained component risks: use only values definitely available in this result branch.
         mechanical_risk = "High" if risk=="High" else ("Medium" if risk=="Medium" else "Low")
-        comparable_count = int(market.get("count", 0) or 0) if isinstance(market, dict) else 0
+        comparable_count = int(safe_market_snapshot(market).get("count", 0) or 0) if isinstance(market, dict) else 0
         valuation_risk = "High" if comparable_count==0 else ("Medium" if comparable_count<5 else "Low")
         provenance_risk = "High" if provenance=="Issue found" or v5c=="Missing / mismatch" else ("Medium" if provenance=="Not checked" or v5c=="Not checked" else "Low")
         commercial_risk="Low" if stress_both>=target_margin*0.5 else ("Medium" if stress_both>0 else "High")
@@ -1569,7 +1622,7 @@ with tabs[0]:
             st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} DG recommended retail." if delta else "Seller asking matches DG recommended retail.")
 
         st.markdown('<div class="section">Market evidence</div>',unsafe_allow_html=True)
-        comparable_count=int(market.get("count",0) or 0)
+        comparable_count=int(safe_market_snapshot(market).get("count",0) or 0)
         if comparable_count<=1:
             st.warning("Low market confidence · 1 close comparable. Treat retail as provisional.")
         elif comparable_count<5:
