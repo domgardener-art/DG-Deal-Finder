@@ -10,6 +10,7 @@ import re
 import html
 import base64
 import mimetypes
+from urllib.parse import urlencode, urlparse, parse_qs
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 DATA = Path(__file__).with_name("deals.csv")
@@ -193,6 +194,71 @@ def metric_pct(v):
 
 
 
+
+def dvla_lookup(reg):
+    """Official DVLA Vehicle Enquiry Service lookup by VRM."""
+    key=str(_secret("DVLA_API_KEY","")).strip()
+    if not key:
+        raise RuntimeError("DVLA_API_KEY is not configured in Streamlit Secrets.")
+    vrm=re.sub(r"[^A-Za-z0-9]","",reg).upper()
+    req=urllib.request.Request(
+        "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles",
+        data=json.dumps({"registrationNumber":vrm}).encode(),
+        headers={"x-api-key":key,"Content-Type":"application/json"},
+        method="POST")
+    with urllib.request.urlopen(req,timeout=20) as r:
+        return json.loads(r.read().decode())
+
+def _pick(obj, *keys):
+    if not isinstance(obj,dict): return None
+    low={str(k).lower():v for k,v in obj.items()}
+    for k in keys:
+        if k.lower() in low and low[k.lower()] not in (None,""):
+            return low[k.lower()]
+    for v in obj.values():
+        if isinstance(v,dict):
+            hit=_pick(v,*keys)
+            if hit not in (None,""): return hit
+    return None
+
+def vehicle_label_from_dvla(d):
+    bits=[d.get("yearOfManufacture"), d.get("make")]
+    # DVLA VES does not reliably return model/derivative; don't invent it.
+    return " ".join(str(x) for x in bits if x not in (None,""))
+
+def market_summary(comps):
+    if not comps: return None
+    prices=[]
+    miles=[]
+    for c in comps:
+        pr=_pick(c,"totalPrice","suppliedPrice","price")
+        mi=_pick(c,"odometerReadingMiles","mileage")
+        try:
+            if pr is not None: prices.append(float(pr))
+        except: pass
+        try:
+            if mi is not None: miles.append(float(mi))
+        except: pass
+    if not prices: return None
+    prices.sort()
+    mid=prices[len(prices)//2] if len(prices)%2 else (prices[len(prices)//2-1]+prices[len(prices)//2])/2
+    return {"count":len(prices),"low":prices[0],"median":mid,"high":prices[-1]}
+
+def fetch_competitors_from_url(search_url, page_size=10):
+    """Fetch official Auto Trader competitor results when the API returns an authorised search URL."""
+    if not search_url: return []
+    headers=_at_headers()
+    sep="&" if "?" in search_url else "?"
+    url=search_url + sep + urlencode({"page":1,"pageSize":min(int(page_size),20)})
+    req=urllib.request.Request(url,headers=headers)
+    with urllib.request.urlopen(req,timeout=25) as r:
+        payload=json.loads(r.read().decode())
+    if isinstance(payload,list): return payload
+    for key in ("results","adverts","stock","vehicles"):
+        if isinstance(payload.get(key),list): return payload[key]
+    return []
+
+
 def scan_advert_image(uploaded):
     """Use OpenAI vision to turn an advert screenshot into structured vehicle data."""
     api_key=str(_secret("OPENAI_API_KEY",""))
@@ -341,33 +407,60 @@ with tabs[0]:
             st.warning("Facebook did not expose this advert to the importer. Use the screenshot/text fallback below.")
             st.session_state["import_error"]=str(e)
 
-    st.markdown('<div class="section">Scan advert screenshot</div>',unsafe_allow_html=True)
-    advert_shot=st.file_uploader("Upload Marketplace screenshot",type=["png","jpg","jpeg","webp"],help="DG reads the advert and fills the vehicle details automatically.")
-    if advert_shot is not None:
-        st.image(advert_shot,use_container_width=True)
-        if st.button("SCAN ADVERT WITH AI",use_container_width=True,type="primary"):
+    st.markdown('<div class="section">Find a vehicle</div>',unsafe_allow_html=True)
+    st.caption("Enter the registration first. DG identifies the car, then uses mileage for valuation/market data when connected.")
+    lr1,lr2=st.columns([2,1])
+    lookup_reg=lr1.text_input("Registration lookup",value=st.session_state.get("imp_reg",""),placeholder="e.g. CV60 ZLZ",key="lookup_reg")
+    lookup_miles=lr2.number_input("Mileage",min_value=0,max_value=500000,value=int(st.session_state.get("imp_mileage",0)),step=1000,key="lookup_miles")
+    if st.button("FIND CAR",use_container_width=True,type="primary"):
+        if not lookup_reg.strip(): st.warning("Enter a registration first.")
+        else:
+            st.session_state["imp_reg"]=re.sub(r"[^A-Za-z0-9]","",lookup_reg).upper()
+            st.session_state["imp_mileage"]=int(lookup_miles)
             try:
-                with st.spinner("Reading vehicle, mileage and price…"):
-                    scan=scan_advert_image(advert_shot)
-                st.session_state["imp_vehicle"]=scan.get("vehicle") or ""
-                st.session_state["imp_reg"]=(scan.get("registration") or "").replace(" ","").upper()
-                st.session_state["imp_mileage"]=int(scan.get("mileage") or 0)
-                st.session_state["imp_asking"]=int(scan.get("asking_price") or 0)
-                desc=scan.get("description") or ""
-                faults=scan.get("stated_faults") or []
-                st.session_state["imp_desc"]=desc + (("\nStated faults: "+", ".join(faults)) if faults else "")
-                st.session_state["scan_year"]=scan.get("year")
-                st.session_state["scan_fuel"]=scan.get("fuel") or ""
-                st.session_state["scan_gearbox"]=scan.get("gearbox") or ""
-                st.success(f'Advert read · {scan.get("confidence","").title()} confidence. Check the extracted fields below.')
+                with st.spinner("Identifying vehicle…"):
+                    dv=dvla_lookup(lookup_reg)
+                st.session_state["dvla_vehicle"]=dv
+                st.session_state["imp_vehicle"]=vehicle_label_from_dvla(dv)
+                st.success("Vehicle found. Check the details below.")
                 st.rerun()
             except Exception as e:
-                if "OPENAI_API_KEY" in str(e):
-                    st.error("Screenshot AI is ready but needs an OpenAI API key in Streamlit Secrets.")
-                else:
-                    st.error("I couldn't read that screenshot automatically. Try a clearer/full advert screenshot.")
-                    with st.expander("Technical detail"): st.code(str(e))
-
+                if "DVLA_API_KEY" in str(e): st.error("Registration lookup is ready but needs a DVLA API key in Streamlit Secrets.")
+                else: st.error("Vehicle lookup failed. Check the registration and try again.")
+                with st.expander("Technical detail"): st.code(str(e))
+    if st.session_state.get("dvla_vehicle"):
+        dv=st.session_state["dvla_vehicle"]
+        st.markdown(f'### {vehicle_label_from_dvla(dv) or st.session_state.get("imp_reg","")}')
+        info=[f'{k}: {v}' for k,v in [("Colour",dv.get("colour")),("Fuel",dv.get("fuelType")),("Engine",(str(dv.get("engineCapacity"))+" cc") if dv.get("engineCapacity") else None),("First reg",dv.get("monthOfFirstRegistration")),("MOT",dv.get("motStatus")),("MOT expiry",dv.get("motExpiryDate"))] if v]
+        st.caption(" · ".join(info))
+    with st.expander("Optional: scan an advert screenshot"):
+        st.caption("Screenshot scanning is now secondary; registration lookup is the main workflow.")
+        advert_shot=st.file_uploader("Upload Marketplace screenshot",type=["png","jpg","jpeg","webp"],help="DG reads the advert and fills the vehicle details automatically.")
+        if advert_shot is not None:
+            st.image(advert_shot,use_container_width=True)
+            if st.button("SCAN ADVERT WITH AI",use_container_width=True,type="primary"):
+                try:
+                    with st.spinner("Reading vehicle, mileage and price…"):
+                        scan=scan_advert_image(advert_shot)
+                    st.session_state["imp_vehicle"]=scan.get("vehicle") or ""
+                    st.session_state["imp_reg"]=(scan.get("registration") or "").replace(" ","").upper()
+                    st.session_state["imp_mileage"]=int(scan.get("mileage") or 0)
+                    st.session_state["imp_asking"]=int(scan.get("asking_price") or 0)
+                    desc=scan.get("description") or ""
+                    faults=scan.get("stated_faults") or []
+                    st.session_state["imp_desc"]=desc + (("\nStated faults: "+", ".join(faults)) if faults else "")
+                    st.session_state["scan_year"]=scan.get("year")
+                    st.session_state["scan_fuel"]=scan.get("fuel") or ""
+                    st.session_state["scan_gearbox"]=scan.get("gearbox") or ""
+                    st.success(f'Advert read · {scan.get("confidence","").title()} confidence. Check the extracted fields below.')
+                    st.rerun()
+                except Exception as e:
+                    if "OPENAI_API_KEY" in str(e):
+                        st.error("Screenshot AI is ready but needs an OpenAI API key in Streamlit Secrets.")
+                    else:
+                        st.error("I couldn't read that screenshot automatically. Try a clearer/full advert screenshot.")
+                        with st.expander("Technical detail"): st.code(str(e))
+    
     with st.expander("Paste advert text instead"):
         pasted=st.text_area("Paste advert text",placeholder="Paste the listing title, price, mileage and description")
         if st.button("EXTRACT PASTED TEXT",use_container_width=True) and pasted:
