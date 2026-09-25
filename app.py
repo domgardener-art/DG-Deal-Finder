@@ -395,12 +395,33 @@ def dg_web_research(make,model,year,engine,fuel,gearbox):
     texts=[]; sources=[]; transport_ok=False
     direct=dg_model_fault_page(make,model,year,engine,fuel,gearbox)
     direct_issues=direct.get("issues",[]) if isinstance(direct,dict) else []
+    _dg_match_level="exact"
+    # If exact engine/spec evidence is thin, progressively broaden to model + fuel,
+    # then model-only. This improves coverage without presenting broader evidence as exact.
+    if not direct_issues and fuel:
+        _broad=dg_model_fault_page(make,model,year,"",fuel,"")
+        direct_issues=_broad.get("issues",[]) if isinstance(_broad,dict) else []
+        if direct_issues:
+            _dg_match_level="model_fuel"
+            for _r in direct_issues:
+                _r["confidence"]="Medium"
+                _r["evidence_type"]="model + fuel-type fault evidence"
+                _r["issue"]="[Model/fuel] "+str(_r.get("issue","Known issue"))
+    if not direct_issues:
+        _broad2=dg_model_fault_page(make,model,year,"","","")
+        direct_issues=_broad2.get("issues",[]) if isinstance(_broad2,dict) else []
+        if direct_issues:
+            _dg_match_level="model"
+            for _r in direct_issues:
+                _r["confidence"]="Low"
+                _r["evidence_type"]="model-level fault evidence — confirm engine applicability"
+                _r["issue"]="[Model-level] "+str(_r.get("issue","Known issue"))
     if isinstance(direct,dict) and direct.get("status")!="unavailable":
         transport_ok=True
 
     # DuckDuckGo Instant Answer is supplemental discovery, not the sole evidence source.: structured/no-key. It is not a full SERP,
     # so absence of deep fault results is "insufficient", not "no known issues".
-    for suffix in [" common problems reliability", " recalls faults", " buying guide problems"]:
+    for suffix in [" common problems reliability", " "+str(fuel or "")+" common faults", " recalls service campaigns", " buying guide problems", " engine gearbox problems"]:
         try:
             url="https://api.duckduckgo.com/?q="+_q(vehicle+suffix)+"&format=json&no_html=1&skip_disambig=1"
             req=Request(url,headers={"User-Agent":"DG-Deal-Finder/1.0","Accept":"application/json"})
@@ -440,7 +461,7 @@ def dg_web_research(make,model,year,engine,fuel,gearbox):
             seen.add(key); final.append(row)
     status="issues_found" if final else ("insufficient_evidence" if transport_ok else "research_unavailable")
     return {"status":status,"issues":final,"evidence_items":len(texts)+len(direct_issues),"vehicle":vehicle,
-            "direct_source":direct.get("url","") if isinstance(direct,dict) else ""}
+            "direct_source":direct.get("url","") if isinstance(direct,dict) else "", "match_level":_dg_match_level}
 
 def _dg_domain(url):
     try:
@@ -525,7 +546,7 @@ def assess_seller_description(text, confirmed=None):
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V91 seamless appraisal UI")
+st.caption("DG Deal Finder • V92 progressive fault matching")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3656,6 +3677,7 @@ with tabs[0]:
             _dg_research={"status":"research_unavailable","issues":[],"error":type(_dg_research_error).__name__}
         _dg_live_intel=_dg_research.get("issues",[]) if isinstance(_dg_research,dict) else []
         _dg_research_status=_dg_research.get("status","research_unavailable") if isinstance(_dg_research,dict) else "research_unavailable"
+        _dg_match_level=_dg_research.get("match_level","exact") if isinstance(_dg_research,dict) else "exact"
         try:
             dg_store_intel(_dg_live_intel)
         except Exception:
@@ -3690,7 +3712,8 @@ with tabs[0]:
         st.markdown('<div class="dg-section">Buying intelligence</div>',unsafe_allow_html=True)
         st.markdown('<div class="dg-sub">Model-specific faults, seller questions and likely work exposure — prioritised by severity.</div>',unsafe_allow_html=True)
         _status_label=_dg_research_status.replace("_"," ").title()
-        st.markdown(f'<div class="dg-status"><b>Research:</b> {_status_label} · <b>live findings:</b> {len(_dg_live_intel)} · <b>saved matches:</b> {max(0,len(_dg_intel)-len(_dg_live_intel))}</div>',unsafe_allow_html=True)
+        _match_text={"exact":"Exact vehicle","model_fuel":"Model + fuel type","model":"Model-level"}.get(_dg_match_level,"Exact vehicle")
+        st.markdown(f'<div class="dg-status"><b>Research:</b> {_status_label} · <b>coverage:</b> {_match_text} · <b>findings:</b> {len(_dg_live_intel)}</div>',unsafe_allow_html=True)
         if _dg_live_intel: st.success(f"DG found and cross-checked {len(_dg_live_intel)} model-specific buying issue(s).")
         elif _dg_intel: st.info("Using DG’s existing sourced buying-intelligence bank.")
         elif _dg_research_status=="research_unavailable": st.warning("Live research was unavailable. DG has not treated that as no known issues.")
