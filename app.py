@@ -335,6 +335,57 @@ DG_WEB_ISSUE_PATTERNS=[
 def _dg_strip_html(x):
     return re.sub(r"\s+"," ",html.unescape(re.sub(r"<[^>]+>"," ",str(x or "")))).strip()
 
+
+def dg_model_fault_page(make,model,year,engine,fuel,gearbox):
+    """Read a free public UK model-fault page directly; return sourced issues, never guessed faults."""
+    import re as _re
+    from html import unescape as _unescape
+    from urllib.parse import quote as _quote
+    def slug(x):
+        x=str(x or "").strip().lower().replace("&","and")
+        return _re.sub(r"[^a-z0-9]+","-",x).strip("-")
+    url=f"https://www.caradvertcheck.co.uk/problems/{slug(make)}/{slug(model)}"
+    try:
+        req=Request(url,headers={"User-Agent":"Mozilla/5.0 DG-Deal-Finder/1.0","Accept":"text/html"})
+        with urlopen(req,timeout=12) as resp:
+            raw=resp.read().decode("utf-8","replace")
+    except Exception:
+        return {"status":"unavailable","issues":[],"url":url}
+    # Convert headings/paragraphs/list text into compact lines without external parser deps.
+    x=_re.sub(r"(?is)<(script|style).*?>.*?</\\1>"," ",raw)
+    x=_re.sub(r"(?i)</?(?:h1|h2|h3|h4|p|li|div|br)[^>]*>","\n",x)
+    x=_unescape(_re.sub(r"(?s)<[^>]+>"," ",x))
+    lines=[" ".join(z.split()) for z in x.splitlines()]
+    lines=[z for z in lines if z]
+    eng=str(engine or "").lower()
+    yr=int(year) if str(year or "").isdigit() else 0
+    issues=[]
+    # Site uses issue headings followed by Rough guide / symptoms / affected vehicles.
+    for i,line in enumerate(lines):
+        low=line.lower()
+        if not any(k in low for k in ["failure","premature","stretch","snapping","fault","leak","overheat","consumption","breakage","crystallization","contamination"]):
+            continue
+        if len(line)<18 or len(line)>220: continue
+        context=" | ".join(lines[i:min(i+14,len(lines))])
+        # Prefer exact engine evidence when the page gives affected-engine detail.
+        engine_ok=(not eng) or any(tok in context.lower() for tok in _re.findall(r"[a-z0-9]+",eng) if len(tok)>=3)
+        if "affected vehicles" in context.lower() and not engine_ok:
+            continue
+        money=_re.search(r"£\s*([0-9,]+)\s*[-–]\s*£?\s*([0-9,]+)",context)
+        lo=hi=0
+        if money:
+            lo=float(money.group(1).replace(",","")); hi=float(money.group(2).replace(",",""))
+        ask=f"Has the car had any work relating to {line.rstrip('.').lower()}, and is there an invoice?"
+        check="Check service/repair invoices and inspect/test specifically for the listed symptoms before buying."
+        issues.append({"make":make,"model":model,"year_from":year or "","year_to":year or "",
+          "engine_terms":str(engine or ""),"fuel":fuel,"gearbox":gearbox,"issue":line.rstrip("."),
+          "severity":"High" if any(k in low for k in ["engine","chain","belt","gearbox","overheat","break"]) else "Medium",
+          "ask":ask,"check":check,"cost_low":lo,"cost_high":hi,
+          "source":"Car Advert Check UK model fault data","source_url":url,
+          "evidence_type":"model fault database + specialist/owner/recall sources","confidence":"Medium"})
+        if len(issues)>=6: break
+    return {"status":"found" if issues else "insufficient","issues":issues,"url":url}
+
 @st.cache_data(ttl=86400,show_spinner=False)
 def dg_web_research(make,model,year,engine,fuel,gearbox):
     """Live no-key research with explicit status. Never equates blocked search with 'no issues'."""
@@ -342,8 +393,12 @@ def dg_web_research(make,model,year,engine,fuel,gearbox):
     import json as _json
     vehicle=" ".join(str(x).strip() for x in [year,make,model,engine,fuel,gearbox] if str(x or "").strip())
     texts=[]; sources=[]; transport_ok=False
+    direct=dg_model_fault_page(make,model,year,engine,fuel,gearbox)
+    direct_issues=direct.get("issues",[]) if isinstance(direct,dict) else []
+    if isinstance(direct,dict) and direct.get("status")!="unavailable":
+        transport_ok=True
 
-    # Official DuckDuckGo Instant Answer API: structured/no-key. It is not a full SERP,
+    # DuckDuckGo Instant Answer is supplemental discovery, not the sole evidence source.: structured/no-key. It is not a full SERP,
     # so absence of deep fault results is "insufficient", not "no known issues".
     for suffix in [" common problems reliability", " recalls faults", " buying guide problems"]:
         try:
@@ -377,8 +432,15 @@ def dg_web_research(make,model,year,engine,fuel,gearbox):
           "source_url":sources[0]["url"] if sources else "",
           "evidence_type":"live structured web research","confidence":"Medium" if len(matched)>=2 else "Low"})
 
-    status="issues_found" if learned else ("insufficient_evidence" if transport_ok else "research_unavailable")
-    return {"status":status,"issues":learned,"evidence_items":len(texts),"vehicle":vehicle}
+    combined=direct_issues+learned
+    seen=set(); final=[]
+    for row in combined:
+        key=" ".join(str(row.get("issue","")).lower().split())
+        if key and key not in seen:
+            seen.add(key); final.append(row)
+    status="issues_found" if final else ("insufficient_evidence" if transport_ok else "research_unavailable")
+    return {"status":status,"issues":final,"evidence_items":len(texts)+len(direct_issues),"vehicle":vehicle,
+            "direct_source":direct.get("url","") if isinstance(direct,dict) else ""}
 
 def _dg_domain(url):
     try:
@@ -461,7 +523,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V88 reliable research status")
+st.caption("DG Deal Finder • V89 broad model fault research")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
