@@ -173,7 +173,7 @@ def extract_source_advert(text):
 
 
 REPAIR_RULES=[
-("Camshaft / valvetrain",["needs camshaft","camshaft needs","camshaft fault","camshaft worn","camshaft issue","camshaft problem"],850,1800),
+("Camshaft / valvetrain",["needs camshaft","camshaft needs","camshaft fault","camshaft worn","camshaft issue","camshaft problem","camshaft required","requires camshaft","camshaft noisy","camshaft noise"],850,1800),
 ("Timing chain",["timing chain rattle","timing chain fault","needs timing chain","timing chain needs"],700,1600),
 ("Timing belt",["needs timing belt","needs cambelt","timing belt due","cambelt due"],350,750),
 ("Head gasket",["head gasket","headgasket","mixing oil and coolant"],900,2200),
@@ -188,7 +188,7 @@ REPAIR_RULES=[
 ("Air conditioning",["air con not working","aircon not working","a/c not working","ac not working"],150,700),
 ("Front brakes",["front brakes needed","needs front brakes","front discs and pads","front pads and discs"],250,500),
 ("Rear brakes",["rear brakes needed","needs rear brakes","rear discs and pads","rear pads and discs"],220,450),
-("Brakes",["brakes needed","needs brakes","discs and pads","pads and discs"],350,700),
+("Brakes",["brakes needed","needs brakes","discs and pads","pads and discs","brakes need doing","brakes require attention","brake judder","brakes judder"],350,700),
 ("Tyres - pair",["needs two tyres","2 tyres needed","two tyres needed","pair of tyres"],180,360),
 ("Tyres - set",["needs four tyres","4 tyres needed","four tyres needed","needs tyres","tyres needed"],350,700),
 ("Wheel bearing",["wheel bearing","bearing noise"],180,400),
@@ -1989,17 +1989,43 @@ with tabs[0]:
 
         appraisal_record={"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"display_name":(reg.strip().upper() if str(reg or "").strip() else vehicle),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"description_repair_allowance":detected_repair_cost,"description_repair_items":"; ".join(x["issue"] for x in repair_intel.get("items",[])),"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
         st.session_state["current_appraisal_record"]=appraisal_record
+        # Persist repair findings as part of the RESULT, not only as pre-submit form text.
+        st.session_state["current_repair_result"]={
+            "items":[dict(x) for x in repair_intel.get("items",[])],
+            "allowance":detected_repair_cost,
+            "multiplier":repair_intel.get("multiplier",1.0),
+            "make":selected_make,"model":selected_model
+        }
+        # Persist a compact result summary so action buttons survive Streamlit button reruns.
+        st.session_state["current_appraisal_ready"]=True
 
+    # IMPORTANT: actions are intentionally OUTSIDE `if go:`. Streamlit reruns the script
+    # when a button is clicked; nesting SAVE inside `if go:` made it disappear before its
+    # click handler could reliably run.
+    if st.session_state.get("current_appraisal_ready") and st.session_state.get("current_appraisal_record"):
+        record_preview=st.session_state["current_appraisal_record"]
+        repair_result=st.session_state.get("current_repair_result") or {}
+        if repair_result.get("items"):
+            st.markdown('<div class="section">Problems found in seller description</div>',unsafe_allow_html=True)
+            for item in repair_result["items"]:
+                st.warning(f'{item["issue"]} — estimated £{item["low"]:,.0f}–£{item["high"]:,.0f}; DG allowance £{item["allowance"]:,.0f}')
+            st.markdown(f'**Total repair allowance factored into this appraisal: £{float(repair_result.get("allowance",0)):,.0f}**')
+            st.caption(f'Cost scaling ×{float(repair_result.get("multiplier",1)):.2f} for {repair_result.get("make","")} {repair_result.get("model","")}. Confirm diagnosis before purchase.')
+        elif record_preview.get("notes") or st.session_state.get("source_advert_text"):
+            st.markdown('<div class="section">Problems found in seller description</div>',unsafe_allow_html=True)
+            st.success("No unresolved repair phrase recognised automatically. Still inspect and diagnose the vehicle before purchase.")
         st.markdown('<div class="section">Finish appraisal</div>',unsafe_allow_html=True)
+        reg_preview=str(record_preview.get("registration","") or "").strip().upper()
+        if reg_preview:
+            st.caption(f"Ready to save as **{reg_preview}**")
         save_col,new_col=st.columns(2)
-        if save_col.button("SAVE APPRAISAL",use_container_width=True,type="primary"):
+        if save_col.button("SAVE APPRAISAL",use_container_width=True,type="primary",key="save_appraisal_btn"):
             record=dict(st.session_state["current_appraisal_record"])
             fingerprint="|".join(str(record.get(k,"")) for k in ("registration","vehicle","mileage","asking","recommended_retail"))
             if st.session_state.get("_last_saved_fingerprint")==fingerprint:
                 st.info("This appraisal is already saved.")
             else:
                 saved=pd.DataFrame([record])
-                # Timestamp at the moment of saving so the Deals tab shows when it was actually saved.
                 saved.loc[0,"date"]=datetime.now().strftime("%Y-%m-%d %H:%M")
                 if DATA.exists():
                     try:
