@@ -300,7 +300,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V67 valuation scope fix")
+st.caption("DG Deal Finder • V69 clean valuation build")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -1932,7 +1932,7 @@ def autoza_mcp_comparables(make,model,year,limit=100):
     return rows[:max(1,int(limit or 100))]
 
 def autoza_public_market_comparables(make,model,limit=100):
-    """Extract genuine Autoza public listing observations using price-centred text windows."""
+    """Extract genuine Autoza listing cards; bind each price to its own year/mileage."""
     if not make or not model: return []
     mk=quote(str(make).strip().lower().replace(" ","-"))
     md=quote(str(model).strip().lower().replace(" ","-"))
@@ -1940,37 +1940,39 @@ def autoza_public_market_comparables(make,model,limit=100):
     rows=[]; seen=set(); target=_dg_norm(model)
     for url in urls:
         try:
-            req=Request(url,headers={"User-Agent":"DG-Deal-Finder/66","Accept":"text/html,*/*"})
+            req=Request(url,headers={"User-Agent":"DG-Deal-Finder/68","Accept":"text/html,*/*"})
             with urlopen(req,timeout=20) as r: raw=r.read().decode("utf-8","ignore")
-        except Exception:
-            continue
-        # preserve card-ish boundaries, then strip HTML
-        raw=re.sub(r'(?i)</(?:article|li|div|p|section|a)>',"\n",raw)
-        text=unescape(re.sub(r'<[^>]+>',' ',raw))
-        text=re.sub(r'[ \t]+',' ',text)
-        # Find each visible GBP asking price and inspect surrounding text for this model/year/mileage.
-        for pm in re.finditer(r'£\s*([\d,]{3,})',text):
-            try: price=float(pm.group(1).replace(",",""))
-            except Exception: continue
-            if not 500<=price<=250000: continue
-            lo=max(0,pm.start()-450); hi=min(len(text),pm.end()+450)
-            c=" ".join(text[lo:hi].split())
+        except Exception: continue
+        raw=unescape(re.sub(r'<[^>]+>',' ',raw))
+        text=" ".join(raw.split())
+        # Autoza visible listings use "... Compare <vehicle> <year><miles> miles <fuel> £<price> ..."
+        starts=[m.start() for m in re.finditer(r'\bCompare\b',text,re.I)]
+        cards=[]
+        for i,st in enumerate(starts):
+            en=starts[i+1] if i+1<len(starts) else min(len(text),st+900)
+            cards.append(text[st:en])
+        # JSON-LD / alternate markup fallback: small windows around each GBP price.
+        if not cards:
+            for pm in re.finditer(r'£\s*[\d,]{3,}',text):
+                cards.append(text[max(0,pm.start()-300):min(len(text),pm.end()+180)])
+        for c in cards:
             if target not in _dg_norm(c): continue
-            years=[int(x) for x in re.findall(r'\b((?:19|20)\d{2})\b',c)]
-            years=[y for y in years if 1970<=y<=datetime.datetime.now().year+1]
-            if not years: continue
-            # nearest plausible year is sufficient because the window is centred on the listing price
-            year=min(years,key=lambda y:abs(y-datetime.datetime.now().year))
+            pm=re.search(r'£\s*([\d,]{3,})',c)
+            ym=re.search(r'\b((?:19|20)\d{2})\b',c)
+            if not pm or not ym: continue
+            try: price=float(pm.group(1).replace(",","")); year=int(ym.group(1))
+            except Exception: continue
+            if not (500<=price<=250000 and 1970<=year<=datetime.datetime.now().year+1): continue
             mm=re.search(r'([\d,]{1,7})\s*miles\b',c,re.I)
             mileage=float(mm.group(1).replace(",","")) if mm else 0
-            fuel=(re.search(r'\b(Petrol|Diesel|Electric|Hybrid|Plug[- ]?in Hybrid|LPG)\b',c,re.I) or [None,""])[1]
-            gearbox=(re.search(r'\b(Manual|Automatic|Auto|PDK|DSG|Tiptronic|CVT)\b',c,re.I) or [None,""])[1]
+            fm=re.search(r'\b(Petrol|Diesel|Electric|Hybrid|Plug[- ]?in Hybrid|LPG)\b',c,re.I)
+            gm=re.search(r'\b(Manual|Automatic|Auto|PDK|DSG|Tiptronic|CVT)\b',c,re.I)
             sid=f"{year}|{int(mileage)}|{int(price)}"
             if sid in seen: continue
             seen.add(sid)
             rows.append({"make":make,"model":model,"year":year,"mileage":mileage,"price":price,
-                         "fuel":fuel,"gearbox":gearbox,"title":c[:220],
-                         "source":"Autoza public market page","source_id":sid})
+                         "fuel":fm.group(1) if fm else "","gearbox":gm.group(1) if gm else "",
+                         "title":c[:260],"source":"Autoza public market page","source_id":sid})
             if len(rows)>=limit: break
         if len(rows)>=limit: break
     return rows[:limit]
@@ -1995,6 +1997,30 @@ def autoza_public_model_guide(make,model):
     except Exception:
         pass
     return {}
+
+def dg_sparse_age_relevant_value(rows,year,mileage,make="",model=""):
+    """Use sparse real listings only when they are age-relevant; never price an old generation from a new one."""
+    clean=[]
+    ty=int(year or 0); tm=float(mileage or 0)
+    for r in rows or []:
+        if not isinstance(r,dict): continue
+        ry=int(_num(r,"year") or 0); rp=float(_num(r,"price","asking_price") or 0); rm=float(_num(r,"mileage","miles") or 0)
+        if not (1970<=ry<=datetime.datetime.now().year+1 and 500<=rp<=250000): continue
+        gap=abs(ry-ty) if ty else 99
+        if gap<=3:
+            clean.append((gap,abs(rm-tm) if rm and tm else 999999,ry,rm,rp,r))
+    if not clean: return {}
+    clean.sort(key=lambda x:(x[0],x[1]))
+    # Sparse mode intentionally uses only the nearest 5 real observations.
+    chosen=clean[:5]
+    prices=[x[4] for x in chosen]
+    # With one observation, use its asking price as low-confidence market evidence, not a fabricated model.
+    value=float(statistics.median(prices))
+    lo=min(prices); hi=max(prices)
+    return {"value":value,"retail":value,"low":lo,"high":hi,"count":len(chosen),
+            "confidence":"Low" if len(chosen)<3 else "Medium",
+            "evidence":"Sparse age-relevant UK asking-price evidence","manual_required":False,
+            "comparables":[x[5] for x in chosen]}
 
 def robust_market_value(rows, year, mileage, make="", model="", asking=0):
     """Merge every free evidence route; unusable rows from one source cannot block another."""
@@ -2028,6 +2054,8 @@ def robust_market_value(rows, year, mileage, make="", model="", asking=0):
                 direct["raw_evidence_count"]=len(live)
                 return direct
     except Exception: pass
+    sparse=dg_sparse_age_relevant_value(live,year,mileage,make,model)
+    if sparse.get("value",0)>0: return sparse
     bank=dg_bank_valuation(make,model,year,mileage)
     if bank.get("value",0)>0: return bank
     guide={}
@@ -3021,6 +3049,8 @@ with tabs[0]:
                 except Exception as _e:
                     _dbg_guide={}; st.caption("Guide error: "+str(_e)[:180])
                 st.caption(f"REST rows: {_dbg_rest} • MCP usable rows: {len(_dbg_mcp)} • Public-page rows: {len(_dbg_pub)}")
+                _dbg_age=[r for r in _dbg_pub if abs(int(_num(r,"year") or 0)-int(selected_year or 0))<=3]
+                st.caption(f"Age-relevant public rows (±3 years): {len(_dbg_age)}")
                 st.caption("Price guide parsed: "+(str(_dbg_guide)[:300] if _dbg_guide else "NO"))
                 if _dbg_pub:
                     st.caption("Public sample: "+str(_dbg_pub[0])[:350])
