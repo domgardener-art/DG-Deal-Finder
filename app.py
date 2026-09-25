@@ -96,17 +96,16 @@ def scaled_appraisal_adjustments(year, market_value, condition_grade, service_hi
 
 
 def safe_market_snapshot(market, fallback_retail=0):
-    """Normalize result-market state so rendering cannot call dict methods on stale/non-dict Streamlit state."""
+    """Normalize result-market state without recursion."""
     try: fallback=float(fallback_retail or 0)
     except (TypeError,ValueError): fallback=0.0
-    if not isinstance(market,dict):
-        return {"count":0,"low":fallback,"high":fallback,"rows":[]}
+    if not isinstance(market,dict): return {"count":0,"low":fallback,"high":fallback,"rows":[]}
     def num(key,default):
-        try: return float(safe_market_snapshot(market).get(key,default) or default)
+        try: return float(market.get(key,default) or default)
         except (TypeError,ValueError,AttributeError): return float(default)
-    try: count=int(safe_market_snapshot(market).get("count",0) or 0)
+    try: count=int(market.get("count",0) or 0)
     except (TypeError,ValueError,AttributeError): count=0
-    rows=safe_market_snapshot(market).get("rows",[])
+    rows=market.get("rows",[])
     if not isinstance(rows,list): rows=[]
     return {"count":max(0,count),"low":num("low",fallback),"high":num("high",fallback),"rows":rows}
 
@@ -167,7 +166,7 @@ def assess_seller_description(text, confirmed=None):
     rules=[
         (3,["engine knock","knocking engine","head gasket","overheating","overheats","timing chain","timing belt snapped","gearbox fault","gearbox issue","clutch slipping","won't start","wont start","non runner","non-runner"],"Major mechanical wording","Get a firm diagnosis and repair cost before making an offer."),
         (2,["warning light","engine light","eml","management light","abs light","airbag light","limp mode","intermittent fault","sometimes cuts","occasionally cuts"],"Warning light / intermittent fault","Ask what warning is present, when it occurs and whether a diagnostic scan is available."),
-        (2,["cat s","category s","cat n","category n","write off","write-off","insurance loss"],"Insurance-category wording","Verify the category, repair quality, invoices/photos and structural repair evidence where relevant."),
+        (2,["cat s","category s","cat n","category n","cat c","category c","cat d","category d","cat b","category b","cat a","category a","write off","write-off","insurance loss"],"Insurance-category wording","Verify the category, repair quality, invoices/photos and structural repair evidence where relevant."),
         (2,["no v5","lost v5","v5 missing","logbook missing","no logbook"],"V5C / ownership-document concern","Resolve keeper identity and V5C position before purchase."),
         (2,["selling for a friend","selling for friend","my mate's car","my mates car","for my brother","for my sister"],"Seller is not clearly the keeper","Establish who owns the car and why the keeper is not selling it directly."),
         (2,["spares or repair"],"Spares-or-repair wording","Treat the car as potentially requiring substantial work until inspected."),
@@ -199,7 +198,10 @@ def assess_seller_description(text, confirmed=None):
         conflicts.append("Advert claims full service history, but the appraisal selection does not.")
     if ("no service history" in low or "no history" in low) and "full" in history:
         conflicts.append("Advert suggests no service history, but appraisal says Full.")
-    desc_cat="cat s" if ("cat s" in low or "category s" in low) else ("cat n" if ("cat n" in low or "category n" in low) else None)
+    desc_cat=None
+    for code in ["a","b","c","d","s","n"]:
+        if f"cat {code}" in low or f"category {code}" in low:
+            desc_cat=f"cat {code}"; break
     if desc_cat and desc_cat not in category:
         conflicts.append(f"Advert mentions {desc_cat.upper()}, but the appraisal category is different/unclear.")
     if conflicts: score+=2
@@ -1342,10 +1344,13 @@ with tabs[0]:
         provenance=c1.selectbox("Finance / theft check",["Not checked","Clear","Issue found"])
         v5c=c2.selectbox("V5C",["Not checked","Present & matches","Missing / mismatch"])
         c1,c2=st.columns(2)
-        insurance_category=c1.selectbox("Insurance category",["Clear / none known","Cat N","Cat S","Other / unsure"])
-        default_cat_adjust={"Clear / none known":0,"Cat N":10,"Cat S":20,"Other / unsure":15}[insurance_category]
+        insurance_category=c1.selectbox("Insurance / write-off category",["Clear / none known","Cat N","Cat S","Cat D (legacy)","Cat C (legacy)","Cat B","Cat A","Other / unsure"],help="Includes current Cat N/S and older UK Cat C/D classifications.")
+        default_cat_adjust={"Clear / none known":0,"Cat N":10,"Cat S":20,"Cat D (legacy)":12,"Cat C (legacy)":18,"Cat B":50,"Cat A":50,"Other / unsure":15}[insurance_category]
         category_discount=c2.number_input("Category retail adjustment (%)",0,50,default_cat_adjust,1,
             help="Editable appraisal assumption. This is not a universal market discount.")
+        category_guidance={"Clear / none known":"No known insurance write-off marker entered.","Cat N":"Non-structural damage under the current UK system. Repair quality and provenance still need checking.","Cat S":"Structural damage under the current UK system. Inspect structural repair quality and evidence carefully.","Cat D (legacy)":"Older repairable category. Verify repair quality and provenance; the percentage is an appraisal assumption, not a universal discount.","Cat C (legacy)":"Older repairable category. Repair costs exceeded pre-accident value under the former system; verify repairs and provenance carefully.","Cat B":"Break for parts: the bodyshell must not return to the road. Do not appraise as a normal retail road car.","Cat A":"Scrap only: the complete vehicle must be crushed. Do not appraise as a retail road car.","Other / unsure":"Category unclear. Verify provenance before relying on the valuation."}
+        if insurance_category in ("Cat A","Cat B"): st.error(category_guidance[insurance_category])
+        else: st.caption(category_guidance[insurance_category])
         condition_grade=st.selectbox(
             "Condition grade",
             [1,2,3,4,5],
@@ -1431,7 +1436,14 @@ with tabs[0]:
             risk_reasons.append("Cat S recorded — structural repair history must be assessed and retail adjusted")
         elif insurance_category=="Cat N":
             if risk=="Low": risk="Medium"
-            risk_reasons.append("Cat N recorded — retail adjusted")
+            risk_reasons.append("Cat N recorded — non-structural write-off history; verify repair quality/provenance")
+        elif insurance_category=="Cat C (legacy)":
+            risk="High"; risk_reasons.append("Legacy Cat C recorded — verify repair quality and provenance carefully")
+        elif insurance_category=="Cat D (legacy)":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Legacy Cat D recorded — verify repair quality and provenance")
+        elif insurance_category in ("Cat A","Cat B"):
+            risk="High"; risk_reasons.append(f"{insurance_category} is not suitable for appraisal as a normal retail road car")
         elif insurance_category=="Other / unsure":
             if risk=="Low": risk="Medium"
             risk_reasons.append("Insurance category needs verification")
