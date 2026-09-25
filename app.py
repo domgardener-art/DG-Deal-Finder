@@ -1609,6 +1609,29 @@ def merge_vehicle_identity(evidence):
     result["confidence"]="High" if len(result["sources"])>=2 and not result["conflicts"] else ("Medium" if result["sources"] else "Unverified")
     return result
 
+
+def uk_registration_year_hint(reg):
+    """Decode the age identifier on standard GB registrations issued since Sep 2001.
+    This is a year hint only: cherished/private/NI/older registrations may not encode age."""
+    vrm=re.sub(r"[^A-Za-z0-9]","",reg or "").upper()
+    if len(vrm)!=7 or not (vrm[:2].isalpha() and vrm[2:4].isdigit() and vrm[4:].isalpha()):
+        return None
+    age=int(vrm[2:4])
+    if 1 <= age <= 49:       # March-August: 01=2001 ... 49=2049
+        return 2000+age
+    if 51 <= age <= 99:      # September-February: 51=2001 ... 99=2049
+        return 1950+age
+    return None
+
+def registration_provider_status():
+    dvla=bool(str(_secret("DVLA_API_KEY","")).strip())
+    try:
+        cfg=st.secrets
+        dvsa=all(cfg.get(k) for k in ["DVSA_CLIENT_ID","DVSA_CLIENT_SECRET","DVSA_TOKEN_URL","DVSA_SCOPE","DVSA_API_KEY"])
+    except Exception:
+        dvsa=False
+    return {"DVLA":dvla,"DVSA MOT":dvsa,"Auto Trader":at_configured()}
+
 def identify_registration(reg, mileage=0):
     """Best-effort registration-first identity. Missing credentials never break manual appraisal."""
     vrm=re.sub(r"[^A-Za-z0-9]","",reg or "").upper()
@@ -1629,7 +1652,12 @@ def identify_registration(reg, mileage=0):
             evidence.append(normalise_identity_payload(fetch_at_vehicle(vrm,int(mileage or 0)),"Auto Trader"))
         except Exception:
             errors.append("Auto Trader unavailable")
-    return {"vrm":vrm,"identity":merge_vehicle_identity(evidence),"evidence":evidence,"errors":errors}
+    identity=merge_vehicle_identity(evidence)
+    year_hint=uk_registration_year_hint(vrm)
+    if not identity.get("year") and year_hint:
+        identity["year"]=year_hint
+        identity["year_hint_only"]=True
+    return {"vrm":vrm,"identity":identity,"evidence":evidence,"errors":errors,"year_hint":year_hint}
 
 def market_summary(comps):
     if not comps: return None
@@ -1817,6 +1845,9 @@ with tabs[0]:
     c1,c2=st.columns([2,1])
     lookup_reg=c1.text_input("Registration lookup",value=st.session_state.get("imp_reg",""),placeholder="e.g. CV60 ZLZ",key="vrm_identity_input")
     lookup_mileage=c2.number_input("Mileage",0,300000,int(st.session_state.get("imp_mileage",0)),1000,key="vrm_identity_mileage")
+    provider_state=registration_provider_status()
+    if not any(provider_state.values()):
+        st.caption("Registration lookup: offline fallback active. DG can decode the standard UK registration year; exact make/model/engine still need confirmation.")
     if st.button("IDENTIFY VEHICLE",use_container_width=True,key="identify_vehicle_btn"):
         with st.spinner("Checking vehicle identity…"):
             result=identify_registration(lookup_reg,lookup_mileage)
@@ -1840,7 +1871,16 @@ with tabs[0]:
             if identity.get("conflicts"):
                 st.warning("Provider conflict: "+"; ".join(identity["conflicts"])+". Confirm the vehicle before buying.")
         else:
-            st.warning("No connected registration provider returned vehicle identity. Manual selection remains available; no vehicle details have been guessed.")
+            year_hint=identity_result.get("year_hint")
+            providers=registration_provider_status()
+            connected=[k for k,v in providers.items() if v]
+            if year_hint:
+                st.info(f"REGISTRATION YEAR HINT: {year_hint} — decoded from the UK age identifier. Make/model/engine are not guessed; confirm them below.")
+                st.session_state["identity_year"]=int(year_hint)
+            if not connected:
+                st.caption("Live registration lookup is not connected on this deployment, so DG is using the registration only for a safe year hint and keeping manual vehicle confirmation available.")
+            else:
+                st.warning("Connected lookup did not return an identity for this registration. DG has not guessed the make/model/engine.")
 
     st.markdown('<div class="section">Confirm vehicle</div>',unsafe_allow_html=True)
     official_catalogue,official_catalogue_error=load_official_uk_catalogue()
