@@ -300,6 +300,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
+st.caption("DG Deal Finder • V67 valuation scope fix")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3008,15 +3009,15 @@ with tabs[0]:
                     _dbg_rest=len(comps or []) if "comps" in locals() else 0
                 except Exception: _dbg_rest=0
                 try:
-                    _dbg_mcp=autoza_mcp_comparables(make,model,year,20)
+                    _dbg_mcp=autoza_mcp_comparables(selected_make,selected_model,selected_year,20)
                 except Exception as _e:
                     _dbg_mcp=[]; st.caption("MCP error: "+str(_e)[:180])
                 try:
-                    _dbg_pub=autoza_public_market_comparables(make,model,20)
+                    _dbg_pub=autoza_public_market_comparables(selected_make,selected_model,20)
                 except Exception as _e:
                     _dbg_pub=[]; st.caption("Public-page error: "+str(_e)[:180])
                 try:
-                    _dbg_guide=autoza_price_guide(make,model)
+                    _dbg_guide=autoza_price_guide(selected_make,selected_model)
                 except Exception as _e:
                     _dbg_guide={}; st.caption("Guide error: "+str(_e)[:180])
                 st.caption(f"REST rows: {_dbg_rest} • MCP usable rows: {len(_dbg_mcp)} • Public-page rows: {len(_dbg_pub)}")
