@@ -338,8 +338,9 @@ def _dg_strip_html(x):
 @st.cache_data(ttl=604800,show_spinner=False)
 def dg_web_research(make,model,year,engine,fuel,gearbox):
     """No-key live web search. Returns snippet evidence; does not diagnose the individual car."""
+    from urllib.parse import quote_plus as _dg_quote_plus, urlparse as _dg_urlparse, parse_qs as _dg_parse_qs, unquote as _dg_unquote
     vehicle=" ".join(str(x).strip() for x in [year,make,model,engine,fuel,gearbox] if str(x or "").strip())
-    q=quote_plus(f'{vehicle} common problems reliability faults buying guide')
+    q=_dg_quote_plus(f'{vehicle} common problems reliability faults buying guide')
     url=f"https://html.duckduckgo.com/html/?q={q}"
     try:
         req=Request(url,headers={"User-Agent":"Mozilla/5.0 DG-Deal-Finder/1.0","Accept":"text/html"})
@@ -356,8 +357,8 @@ def dg_web_research(make,model,year,engine,fuel,gearbox):
         # unwrap DDG redirect when present
         try:
             if "uddg=" in href:
-                href=unquote(parse_qs(urlparse(href).query).get("uddg",[href])[0])
-            domain=urlparse(href).netloc.lower().replace("www.","")
+                href=_dg_unquote(_dg_parse_qs(_dg_urlparse(href).query).get("uddg",[href])[0])
+            domain=_dg_urlparse(href).netloc.lower().replace("www.","")
         except Exception: domain=""
         title=_dg_strip_html(lm.group(2)); snippet=_dg_strip_html(sm.group(1) if sm else "")
         if domain and snippet: evidence.append({"title":title,"snippet":snippet,"url":href,"domain":domain})
@@ -447,7 +448,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V83 automatic live buying research")
+st.caption("DG Deal Finder • V84 live research import fix")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
