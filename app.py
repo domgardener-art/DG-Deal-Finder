@@ -10,7 +10,7 @@ import re
 import html
 import base64
 import mimetypes
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import urlencode, urlparse, parse_qs, quote
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 DATA = Path(__file__).with_name("deals.csv")
@@ -194,6 +194,35 @@ def metric_pct(v):
 
 
 
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def free_models_for_make_year(make, year):
+    make_q=quote(str(make).strip())
+    url=f"https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/{make_q}/modelyear/{int(year)}?format=json"
+    req=urllib.request.Request(url,headers={"User-Agent":"DG-Deal-Finder/1.0"})
+    with urllib.request.urlopen(req,timeout=15) as r:
+        data=json.loads(r.read().decode())
+    return sorted({str(x.get("Model_Name","")).strip() for x in data.get("Results",[]) if x.get("Model_Name")})
+
+UK_MAKES=["Abarth","Alfa Romeo","Audi","BMW","Citroen","Cupra","Dacia","DS","Fiat","Ford","Honda","Hyundai","Jaguar","Jeep","Kia","Land Rover","Lexus","Mazda","Mercedes-Benz","MG","MINI","Mitsubishi","Nissan","Peugeot","Porsche","Renault","SEAT","Skoda","Smart","Subaru","Suzuki","Tesla","Toyota","Vauxhall","Volkswagen","Volvo"]
+COMMON_UK_SPECS={
+("Ford","Fiesta"):["Style","Style+","Edge","Zetec","Zetec S","Titanium","Titanium X","ST-Line","ST-Line X","ST"],
+("Ford","Focus"):["Style","Zetec","Titanium","Titanium X","ST-Line","ST-Line X","Active","ST"],
+("Volkswagen","Golf"):["S","SE","Match","GT","GT Edition","R-Line","GTI","GTD","R"],
+("Volkswagen","Polo"):["S","SE","Match","Beats","SEL","R-Line","GTI"],
+("BMW","3 Series"):["SE","Sport","Luxury","M Sport"],
+("Audi","A3"):["SE","Sport","S line","Black Edition"],
+("Vauxhall","Corsa"):["Expression","S","SE","Design","Energy","SRi","Elite","GS Line","Ultimate"],
+("Vauxhall","Astra"):["Design","Tech Line","SRi","Elite","GS Line","Ultimate"],
+("Mercedes-Benz","A-Class"):["SE","Sport","AMG Line","AMG Line Premium","AMG Line Premium Plus"],
+("Nissan","Qashqai"):["Visia","Acenta","Acenta Premium","N-Connecta","Tekna","Tekna+"],
+("Peugeot","208"):["Access","Active","Allure","GT Line","GT"],
+("Renault","Clio"):["Expression","Dynamique","Play","Iconic","S Edition","RS Line","Techno"],
+("Toyota","Yaris"):["Active","Icon","Design","Excel","GR Sport"],
+("Kia","Sportage"):["1","2","3","4","GT-Line","GT-Line S"],
+("Hyundai","Tucson"):["S","SE","SE Nav","Premium","Premium SE","N Line"],
+}
 
 def dvla_lookup(reg):
     """Official DVLA Vehicle Enquiry Service lookup by VRM."""
@@ -389,91 +418,34 @@ tabs=st.tabs(["SOURCE","MARKET","DEALS","RULES"])
 
 with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Stock appraisal</div><div class="hero">Is it worth buying?</div><div class="sub">Appraise a car against your target margin before you message the seller.</div></div>',unsafe_allow_html=True)
-    listing=st.text_input("Facebook Marketplace link",placeholder="Paste the advert/share link",key="listing_url")
-    if st.button("IMPORT ADVERT",use_container_width=True):
+    st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
+    st.caption("Free constrained selector: each choice filters the next so you cannot mistype the make/model combination.")
+    a,b=st.columns(2)
+    selected_make=a.selectbox("Make",[""]+UK_MAKES)
+    selected_year=b.selectbox("Year",list(range(2026,1995,-1)),index=16)
+    models=[]
+    if selected_make:
         try:
-            with st.spinner("Reading public advert details…"):
-                imp=import_public_listing(listing)
-            st.session_state["imp_vehicle"]=imp.get("vehicle") or ""
-            st.session_state["imp_reg"]=imp.get("registration") or ""
-            st.session_state["imp_mileage"]=int(imp.get("mileage") or 0)
-            st.session_state["imp_asking"]=int(imp.get("price") or 0)
-            st.session_state["imp_desc"]=imp.get("description") or ""
-            if imp.get("blocked") or not any([imp.get("vehicle"),imp.get("price"),imp.get("mileage"),imp.get("registration")]):
-                st.warning("Facebook did not expose enough public advert data from this link. Use the advert screenshot/text fallback below.")
-            else:
-                st.success("Advert details imported. Check them before analysing.")
-        except Exception as e:
-            st.warning("Facebook did not expose this advert to the importer. Use the screenshot/text fallback below.")
-            st.session_state["import_error"]=str(e)
-
-    st.markdown('<div class="section">Find a vehicle</div>',unsafe_allow_html=True)
-    st.caption("Enter the registration first. DG identifies the car, then uses mileage for valuation/market data when connected.")
-    lr1,lr2=st.columns([2,1])
-    lookup_reg=lr1.text_input("Registration lookup",value=st.session_state.get("imp_reg",""),placeholder="e.g. CV60 ZLZ",key="lookup_reg")
-    lookup_miles=lr2.number_input("Mileage",min_value=0,max_value=500000,value=int(st.session_state.get("imp_mileage",0)),step=1000,key="lookup_miles")
-    if st.button("FIND CAR",use_container_width=True,type="primary"):
-        if not lookup_reg.strip(): st.warning("Enter a registration first.")
-        else:
-            st.session_state["imp_reg"]=re.sub(r"[^A-Za-z0-9]","",lookup_reg).upper()
-            st.session_state["imp_mileage"]=int(lookup_miles)
-            try:
-                with st.spinner("Identifying vehicle…"):
-                    dv=dvla_lookup(lookup_reg)
-                st.session_state["dvla_vehicle"]=dv
-                st.session_state["imp_vehicle"]=vehicle_label_from_dvla(dv)
-                st.success("Vehicle found. Check the details below.")
-                st.rerun()
-            except Exception as e:
-                if "DVLA_API_KEY" in str(e): st.error("Registration lookup is ready but needs a DVLA API key in Streamlit Secrets.")
-                else: st.error("Vehicle lookup failed. Check the registration and try again.")
-                with st.expander("Technical detail"): st.code(str(e))
-    if st.session_state.get("dvla_vehicle"):
-        dv=st.session_state["dvla_vehicle"]
-        st.markdown(f'### {vehicle_label_from_dvla(dv) or st.session_state.get("imp_reg","")}')
-        info=[f'{k}: {v}' for k,v in [("Colour",dv.get("colour")),("Fuel",dv.get("fuelType")),("Engine",(str(dv.get("engineCapacity"))+" cc") if dv.get("engineCapacity") else None),("First reg",dv.get("monthOfFirstRegistration")),("MOT",dv.get("motStatus")),("MOT expiry",dv.get("motExpiryDate"))] if v]
-        st.caption(" · ".join(info))
-    with st.expander("Optional: scan an advert screenshot"):
-        st.caption("Screenshot scanning is now secondary; registration lookup is the main workflow.")
-        advert_shot=st.file_uploader("Upload Marketplace screenshot",type=["png","jpg","jpeg","webp"],help="DG reads the advert and fills the vehicle details automatically.")
-        if advert_shot is not None:
-            st.image(advert_shot,use_container_width=True)
-            if st.button("SCAN ADVERT WITH AI",use_container_width=True,type="primary"):
-                try:
-                    with st.spinner("Reading vehicle, mileage and price…"):
-                        scan=scan_advert_image(advert_shot)
-                    st.session_state["imp_vehicle"]=scan.get("vehicle") or ""
-                    st.session_state["imp_reg"]=(scan.get("registration") or "").replace(" ","").upper()
-                    st.session_state["imp_mileage"]=int(scan.get("mileage") or 0)
-                    st.session_state["imp_asking"]=int(scan.get("asking_price") or 0)
-                    desc=scan.get("description") or ""
-                    faults=scan.get("stated_faults") or []
-                    st.session_state["imp_desc"]=desc + (("\nStated faults: "+", ".join(faults)) if faults else "")
-                    st.session_state["scan_year"]=scan.get("year")
-                    st.session_state["scan_fuel"]=scan.get("fuel") or ""
-                    st.session_state["scan_gearbox"]=scan.get("gearbox") or ""
-                    st.success(f'Advert read · {scan.get("confidence","").title()} confidence. Check the extracted fields below.')
-                    st.rerun()
-                except Exception as e:
-                    if "OPENAI_API_KEY" in str(e):
-                        st.error("Screenshot AI is ready but needs an OpenAI API key in Streamlit Secrets.")
-                    else:
-                        st.error("I couldn't read that screenshot automatically. Try a clearer/full advert screenshot.")
-                        with st.expander("Technical detail"): st.code(str(e))
-    
-    with st.expander("Paste advert text instead"):
-        pasted=st.text_area("Paste advert text",placeholder="Paste the listing title, price, mileage and description")
-        if st.button("EXTRACT PASTED TEXT",use_container_width=True) and pasted:
-            blob=pasted
-            pm=re.search(r'£\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,6})',blob)
-            mm=re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,6})\s*(?:miles|mi)\b',blob,re.I)
-            rm=re.search(r'\b([A-Z]{2}[0-9]{2}\s?[A-Z]{3})\b',blob.upper())
-            if pm: st.session_state["imp_asking"]=int(pm.group(1).replace(",",""))
-            if mm: st.session_state["imp_mileage"]=int(mm.group(1).replace(",",""))
-            if rm: st.session_state["imp_reg"]=rm.group(1).replace(" ","")
-            lines=[x.strip() for x in pasted.splitlines() if x.strip()]
-            if lines: st.session_state["imp_vehicle"]=lines[0][:100]
-            st.success("Text extracted. Check the fields below.")
+            models=free_models_for_make_year(selected_make,selected_year)
+        except Exception:
+            st.warning("Free model catalogue is temporarily unavailable. Try again in a moment.")
+    selected_model=st.selectbox("Model",[""]+models,disabled=not bool(models))
+    specs=COMMON_UK_SPECS.get((selected_make,selected_model),[])
+    if specs:
+        selected_spec=st.selectbox("Trim / spec",[""]+specs)
+    else:
+        selected_spec=""
+        if selected_model:
+            st.info("Exact UK trim isn't in the free catalogue yet, so DG won't guess it.")
+    cat_mileage=st.number_input("Mileage",0,500000,0,1000,key="catalogue_mileage")
+    reg_manual=st.text_input("Registration (optional)",placeholder="e.g. DA59 XDG")
+    if selected_make and selected_model:
+        label=f"{selected_year} {selected_make} {selected_model}"
+        if selected_spec: label+=f" {selected_spec}"
+        st.session_state["imp_vehicle"]=label
+        st.session_state["imp_mileage"]=int(cat_mileage)
+        st.session_state["imp_reg"]=re.sub(r"[^A-Za-z0-9]","",reg_manual).upper()
+        st.success(f"Selected: {label}")
 
     with st.form("appraise"):
         reg=st.text_input("Registration",value=st.session_state.get("imp_reg",""),placeholder="e.g. CV60 ZLZ").upper().replace(" ","")
