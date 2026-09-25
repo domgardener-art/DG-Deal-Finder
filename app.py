@@ -31,12 +31,83 @@ def mot_time_adjustment(months_remaining):
     return -350
 
 
+
+def scaled_appraisal_adjustments(year, market_value, condition_grade, service_history, keys, mot_months):
+    """DG appraisal assumptions scaled by vehicle age and current market value.
+    These are heuristics, not claimed observed market discounts.
+    """
+    try: year=int(year)
+    except (TypeError,ValueError): year=2020
+    try: value=max(0.0,float(market_value or 0))
+    except (TypeError,ValueError): value=0.0
+    age=max(0,2026-year)
+
+    # Age/value severity: newer and higher-value stock carries more retail sensitivity.
+    if age<=3: age_factor=1.55
+    elif age<=6: age_factor=1.30
+    elif age<=10: age_factor=1.00
+    elif age<=15: age_factor=0.72
+    else: age_factor=0.55
+
+    if value>=30000: value_factor=1.60
+    elif value>=20000: value_factor=1.40
+    elif value>=12000: value_factor=1.20
+    elif value>=7000: value_factor=1.00
+    elif value>=4000: value_factor=0.80
+    else: value_factor=0.65
+
+    context=age_factor*value_factor
+
+    grade_base={1:0,2:0,3:-175,4:-450,5:-900}.get(int(condition_grade or 2),0)
+    history_base={"Full":0,"Part":-225,"None":-500,"Unknown":-300}.get(str(service_history),-300)
+    keys_base={"2+ keys":0,"1 key":-125,"Unknown":-100}.get(str(keys),-100)
+
+    grade=int(round(grade_base*context/25.0)*25)
+    service=int(round(history_base*context/25.0)*25)
+    # Keys scale less aggressively than condition/history because replacement cost is not proportional to vehicle value.
+    key_context=max(0.75,min(1.60,(age_factor*0.45)+(value_factor*0.55)))
+    key_adj=int(round(keys_base*key_context/25.0)*25)
+
+    # MOT term matters more as a car ages; under 3 years old, don't penalise solely for MOT term.
+    try: m=int(mot_months)
+    except (TypeError,ValueError): m=12
+    if age<3:
+        mot=0
+    else:
+        base=0 if m>=9 else (-50 if m>=6 else (-150 if m>=3 else (-250 if m>=1 else -350)))
+        mot_age_factor=0.70 if age<=5 else (0.90 if age<=9 else (1.00 if age<=14 else 1.10))
+        mot=int(round(base*mot_age_factor/25.0)*25)
+
+    def why(adj_type, amount):
+        if amount==0: return "No default deduction for this selection."
+        age_text="young" if age<=5 else ("mid-age" if age<=10 else "older")
+        value_text="high-value" if value>=20000 else ("mid-value" if value>=7000 else "lower-value")
+        if adj_type=="keys": return f"Scaled moderately for a {age_text}, {value_text} car; key cost is not assumed to rise directly with vehicle value."
+        if adj_type=="mot": return f"Scaled mainly by vehicle age ({age} years), because short MOT generally matters more to older stock."
+        return f"Scaled for vehicle age ({age} years) and current market value (~£{value:,.0f})."
+    return {
+        "age":age,"value":value,"context":context,
+        "condition":grade,"service":service,"keys":key_adj,"mot":mot,
+        "condition_reason":why("condition",grade),
+        "service_reason":why("service",service),
+        "keys_reason":why("keys",key_adj),
+        "mot_reason":why("mot",mot)
+    }
+
 def dg_buyer_overview(market_average,recommended_retail,asking,max_buy,category,category_adjustment,condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,prep,other_costs,contingency,target_margin,comp_count,market_low,market_high):
     out=[]
+    # Defensive normalization: Streamlit reruns/session state can carry older values.
+    if not isinstance(mot_analysis, dict):
+        mot_analysis={"items":[],"low":0,"high":0,"planning":0}
+    mot_items=mot_analysis.get("items",[])
+    if isinstance(mot_items,str): mot_items=[mot_items] if mot_items.strip() else []
+    elif not isinstance(mot_items,(list,tuple,set)): mot_items=[]
+    try: mot_months=int(mot_months or 0)
+    except (TypeError,ValueError): mot_months=0
     gap=asking-max_buy
     out.append(("Buying position",f"Seller is £{abs(gap):,.0f} {'above' if gap>0 else 'inside'} DG's maximum buy. "+("At the current assumptions the asking price does not leave the target contribution." if gap>0 else "This leaves room before unrecorded defects.")))
     if category!="Clear / none known": out.append(("Insurance category",f"{category} already reduces retail by £{abs(category_adjustment):,.0f}. DG view: verify repair quality/provenance and expect a smaller buyer pool than an equivalent clear-history car."))
-    out.append(("MOT",f"Entered notes flag {', '.join(mot_analysis.get('items',[])) or 'no automatically recognised repair category'}. Current advisory allowance £{mot_notes_cost:,.0f}. DG view: confirm actual repair prices before buying."))
+    out.append(("MOT",f"Entered notes flag {', '.join(str(x) for x in mot_items) or 'no automatically recognised repair category'}. Current advisory allowance £{mot_notes_cost:,.0f}. DG view: confirm actual repair prices before buying."))
     motview="plan on a fresh MOT before retail" if mot_months<3 else ("stock time may leave it needing a fresh MOT" if mot_months<6 else "no major short-MOT concern from term alone")
     out.append(("MOT remaining",f"About {mot_months} month(s): {motview}."))
     out.append(("Inputs",f"Condition {condition_grade}/5 · service history {service_history} · keys {keys} · prep £{prep:,.0f} · other costs £{other_costs:,.0f} · contingency £{contingency:,.0f}."))
@@ -59,6 +130,56 @@ def extract_source_advert(text):
     m=re.search(r'(\d{1,3}(?:,\d{3})+|\d{4,6})\s*(?:miles|mile|mi)\b',text,re.I)
     if m:out["mileage"]=int(m.group(1).replace(",",""))
     return out
+
+
+def assess_seller_description(text, confirmed=None):
+    """Risk-screen seller wording. Seller claims remain unverified."""
+    text=(text or "").strip()
+    confirmed=confirmed or {}
+    if not text:
+        return {"level":"Unknown","score":0,"flags":[],"positives":[],"questions":[],"conflicts":[]}
+    low=text.lower(); flags=[]; positives=[]; questions=[]; conflicts=[]; score=0; seen=set()
+    rules=[
+        (3,["engine knock","knocking engine","head gasket","overheating","overheats","timing chain","timing belt snapped","gearbox fault","gearbox issue","clutch slipping","won't start","wont start","non runner","non-runner"],"Major mechanical wording","Get a firm diagnosis and repair cost before making an offer."),
+        (2,["warning light","engine light","eml","management light","abs light","airbag light","limp mode","intermittent fault","sometimes cuts","occasionally cuts"],"Warning light / intermittent fault","Ask what warning is present, when it occurs and whether a diagnostic scan is available."),
+        (2,["cat s","category s","cat n","category n","write off","write-off","insurance loss"],"Insurance-category wording","Verify the category, repair quality, invoices/photos and structural repair evidence where relevant."),
+        (2,["no v5","lost v5","v5 missing","logbook missing","no logbook"],"V5C / ownership-document concern","Resolve keeper identity and V5C position before purchase."),
+        (2,["selling for a friend","selling for friend","my mate's car","my mates car","for my brother","for my sister"],"Seller is not clearly the keeper","Establish who owns the car and why the keeper is not selling it directly."),
+        (2,["spares or repair"],"Spares-or-repair wording","Treat the car as potentially requiring substantial work until inspected."),
+        (1,["needs tlc","needs some tlc","project","sold as seen","quick sale","need gone","must go"],"Cautionary seller wording","Inspect carefully and price all unquantified work."),
+        (1,["service due","needs service","overdue service","no service history","no history","part service history","partial service history"],"Service-history / maintenance concern","Check invoices, service record and overdue maintenance."),
+        (1,["one key","1 key","single key","only key"],"Single-key wording","Confirm key count and replacement/programming cost."),
+        (1,["tyres needed","needs tyres","tyre worn","brakes needed","needs brakes","discs and pads","suspension knock","wheel bearing"],"Likely consumable / MOT-related spend","Inspect the named items and replace generic allowances with real repair costs.")
+    ]
+    for pts,terms,label,q in rules:
+        if any(term in low for term in terms) and label not in seen:
+            seen.add(label); score+=pts; flags.append(label); questions.append(q)
+    positives_rules=[
+        (["full service history","full history","fsh"],"Seller claims full service history"),
+        (["two keys","2 keys","both keys"],"Seller claims two keys"),
+        (["recent service","just serviced","serviced recently"],"Seller claims recent servicing"),
+        (["new mot","12 months mot","12 month mot","fresh mot"],"Seller claims a fresh/long MOT"),
+        (["new tyres","recent tyres"],"Seller claims recent tyres"),
+        (["new clutch","clutch replaced"],"Seller claims clutch replacement"),
+        (["timing belt changed","cambelt changed","timing belt replaced","cambelt replaced"],"Seller claims timing-belt work")
+    ]
+    for terms,label in positives_rules:
+        if any(term in low for term in terms): positives.append(label+" — verify evidence.")
+    keys=str(confirmed.get("keys","")).lower()
+    history=str(confirmed.get("service_history","")).lower()
+    category=str(confirmed.get("category","")).lower()
+    if any(x in low for x in ["one key","1 key","single key","only key"]) and ("2+" in keys or "2 key" in keys):
+        conflicts.append("Advert appears to say one key, but appraisal says 2+ keys.")
+    if ("full service history" in low or " fsh " in " "+low+" ") and any(x in history for x in ["none","part","unknown"]):
+        conflicts.append("Advert claims full service history, but the appraisal selection does not.")
+    if ("no service history" in low or "no history" in low) and "full" in history:
+        conflicts.append("Advert suggests no service history, but appraisal says Full.")
+    desc_cat="cat s" if ("cat s" in low or "category s" in low) else ("cat n" if ("cat n" in low or "category n" in low) else None)
+    if desc_cat and desc_cat not in category:
+        conflicts.append(f"Advert mentions {desc_cat.upper()}, but the appraisal category is different/unclear.")
+    if conflicts: score+=2
+    level="Low" if score<=1 else ("Medium" if score<=4 else "High")
+    return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 DATA = Path(__file__).with_name("deals.csv")
@@ -1189,21 +1310,24 @@ with tabs[0]:
             }[x],
             help="DG 1–5 appraisal grade: 1 is best, 5 is major damage. This is a DG appraisal scale inspired by common vehicle-buying condition grading, not claimed as WBAC's proprietary formula."
         )
-        default_grade_adjust={1:0,2:0,3:-150,4:-350,5:-750}[condition_grade]
+        # Context-sensitive defaults use the live estimate currently available for this appraisal.
+        scale_value=float(st.session_state.get("market_retail",0) or 0)
+        scaled_defaults=scaled_appraisal_adjustments(selected_year,scale_value,condition_grade,service_history,keys,12)
         grade_adjustment=st.number_input(
-            "Condition grade retail adjustment (£)",-5000,1000,default_grade_adjust,50,
-            help="Editable effect on expected retail after preparation. Keep actual repair/prep spend in the Prep field so costs are not hidden."
+            "Condition grade retail adjustment (£)",-10000,2000,int(scaled_defaults["condition"]),25,
+            help="DG default scales with age and live market value. Editable. Actual repair/prep spend still belongs in Prep."
         )
-        history_adjust_default={"Full":0,"Part":-150,"None":-300,"Unknown":-200}.get(service_history,-200)
+        st.caption("DG scaled default: "+scaled_defaults["condition_reason"])
         service_adjustment=st.number_input(
-            "Service history retail adjustment (£)",-3000,1000,history_adjust_default,50,
-            help="Editable retail adjustment. Full history defaults to £0; incomplete/unknown history reduces the expected retail."
+            "Service history retail adjustment (£)",-10000,2000,int(scaled_defaults["service"]),25,
+            help="DG default scales incomplete history more heavily on younger/higher-value stock. Editable."
         )
-        keys_adjust_default={"2+ keys":0,"1 key":-100,"Unknown":-100}.get(keys,-100)
+        st.caption("DG scaled default: "+scaled_defaults["service_reason"])
         keys_adjustment=st.number_input(
-            "Keys retail adjustment (£)",-1000,500,keys_adjust_default,50,
-            help="Editable retail adjustment for missing/unknown spare keys."
+            "Keys retail adjustment (£)",-3000,1000,int(scaled_defaults["keys"]),25,
+            help="DG default scales moderately with vehicle context rather than using the same £ amount on every car. Editable."
         )
+        st.caption("DG scaled default: "+scaled_defaults["keys_reason"])
         st.markdown('<div class="section">MOT appraisal</div>',unsafe_allow_html=True)
         mot_notes=st.text_area("Notes / advisories from last MOT",placeholder="Paste or type the latest MOT advisories here…",help="Buying-cost planning aid only — not an MOT lookup or garage quote.")
         mot_analysis=analyse_mot_notes(mot_notes)
@@ -1213,7 +1337,9 @@ with tabs[0]:
         elif mot_notes.strip():
             st.caption("No cost category recognised automatically. Review the wording manually.")
         mot_months=st.slider("Approx. MOT remaining (months)",0,12,12,1)
-        mot_time_adj=st.number_input("MOT time remaining adjustment (£)",-2000,500,int(mot_time_adjustment(mot_months)),25,help="Editable: 9–12m £0; 6–8m -£50; 3–5m -£150; 1–2m -£250; under 1m -£350.")
+        scaled_mot=scaled_appraisal_adjustments(selected_year,scale_value,condition_grade,service_history,keys,mot_months)
+        mot_time_adj=st.number_input("MOT time remaining adjustment (£)",-3000,500,int(scaled_mot["mot"]),25,help="DG default scales short-MOT impact mainly by vehicle age. Editable.")
+        st.caption("DG scaled default: "+scaled_mot["mot_reason"])
         mot_notes_cost=st.number_input("MOT advisory cost allowance (£)",0,5000,int(mot_analysis["planning"]),25,help="Editable likely-cost allowance from the MOT notes. This reduces maximum buy.")
 
         manual_retail_adjustment=st.number_input(
@@ -1257,6 +1383,31 @@ with tabs[0]:
         st.caption(" · ".join(risk_reasons))
         if st.session_state.get("scan_year") or st.session_state.get("scan_fuel") or st.session_state.get("scan_gearbox"):
             st.caption("Detected: " + " · ".join([str(x) for x in [st.session_state.get("scan_year"),st.session_state.get("scan_fuel"),st.session_state.get("scan_gearbox")] if x]))
+        if source_advert.strip():
+            st.markdown('<div class="section">Description intelligence</div>',unsafe_allow_html=True)
+            description_risk=assess_seller_description(source_advert,{
+                "keys":keys,
+                "service_history":service_history,
+                "category":insurance_category
+            })
+            if description_risk["level"]=="High": st.error("Seller-description risk: High")
+            elif description_risk["level"]=="Medium": st.warning("Seller-description risk: Medium")
+            else: st.success("Seller-description risk: Low")
+            if description_risk["flags"]:
+                st.write("**What DG noticed:** "+", ".join(description_risk["flags"]))
+            if description_risk["conflicts"]:
+                st.write("**Conflicts with your appraisal:**")
+                for conflict in description_risk["conflicts"]: st.write("• "+conflict)
+            if description_risk["positives"]:
+                st.write("**Seller claims worth verifying:**")
+                for positive in description_risk["positives"]: st.write("• "+positive)
+            if description_risk["questions"]:
+                with st.expander("Questions to ask the seller"):
+                    for question in description_risk["questions"]: st.write("• "+question)
+            st.caption("This screens seller wording for risk and contradictions. Seller claims remain unverified; it does not replace inspection, diagnostics or provenance checks.")
+        else:
+            description_risk={"level":"Unknown","score":0,"flags":[],"positives":[],"questions":[],"conflicts":[]}
+
         go=st.form_submit_button("ANALYSE DEAL",use_container_width=True)
     if go:
         contingency,all_in,margin,roi,max_buy,score,verdict=calc(asking,retail,prep,fees,risk)
@@ -1297,6 +1448,13 @@ with tabs[0]:
         buyer_notes=dg_buyer_overview(market_average,recommended_retail,asking,max_buy,insurance_category,category_adjustment,condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,prep,fees,contingency,target_margin,int(market.get("count",0) or 0),float(market.get("low",market_average) or market_average),float(market.get("high",market_average) or market_average))
         for overview_title,overview_body in buyer_notes:
             st.markdown(f"**{overview_title}:** {overview_body}")
+        if not isinstance(description_risk,dict):
+            description_risk={"level":"Unknown","score":0,"flags":[],"positives":[],"questions":[],"conflicts":[]}
+        if description_risk.get("level")!="Unknown":
+            details=[]
+            if description_risk.get("flags"): details.append(", ".join(description_risk["flags"]))
+            if description_risk.get("conflicts"): details.append(f'{len(description_risk["conflicts"])} conflict(s) with entered appraisal data')
+            st.markdown(f'**Seller-description risk:** {description_risk["level"]} — {"; ".join(details) if details else "no specific caution phrase recognised"}. Seller wording is unverified.')
         if source_advert.strip():
             st.markdown("**Seller advert context:** seller wording is treated as unverified until checked against the car, paperwork and provenance.")
             with st.expander("View source advert"):
@@ -1306,6 +1464,7 @@ with tabs[0]:
         st.markdown('<div class="section">Why that retail price?</div>',unsafe_allow_html=True)
         a,b=st.columns(2); a.metric("Live market average",f"£{market_average:,.0f}"); b.metric("DG recommended retail",f"£{recommended_retail:,.0f}")
         st.markdown("**How DG got to that selling price**")
+        st.caption(f"Context-sensitive defaults: {scaled_mot['age']}-year-old vehicle · live market context ~£{market_average:,.0f}. You can override every adjustment.")
         st.write(f"Live market average: **£{market_average:,.0f}**")
         st.write(f"{insurance_category}: **£{category_adjustment:+,.0f}** ({category_discount}% adjustment)")
         st.write(f"Condition grade {condition_grade}: **£{grade_adjustment:+,.0f}**")
@@ -1393,7 +1552,7 @@ with tabs[0]:
             st.success(f"Market evidence: {comparable_count} close comparables gives a more useful current asking-price sample.")
         st.caption("DG uses current asking-price adverts here. It will only show historical price/stock trends once real observations have been saved over time.")
 
-        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}])
+        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}])
         if DATA.exists(): row=pd.concat([pd.read_csv(DATA),row],ignore_index=True)
         row.to_csv(DATA,index=False)
     st.markdown('</div>',unsafe_allow_html=True)
