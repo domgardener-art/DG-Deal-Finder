@@ -523,7 +523,9 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V90 research visibility guard")
+
+st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
+st.caption("DG Deal Finder • V91 seamless appraisal UI")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3685,42 +3687,32 @@ with tabs[0]:
                 "confidence":_i.get("confidence","Medium")})
             _learn.append(_x)
         dg_store_intel(_learn)
-        st.markdown("### Model buying intelligence")
-        st.caption(f"Research status: {_dg_research_status.replace('_',' ').title()} · live findings: {len(_dg_live_intel)} · saved matches: {max(0,len(_dg_intel)-len(_dg_live_intel))}")
-        if _dg_live_intel:
-            st.success(f"Live research cross-checked {len(_dg_live_intel)} buying issue(s) and added them to DG's knowledge bank.")
-        elif _dg_intel:
-            st.info("Using DG's existing sourced buying-intelligence bank for this vehicle.")
-        elif _dg_research_status=="research_unavailable":
-            st.warning("Live online research was unavailable for this appraisal. DG has not interpreted that as 'no known issues'.")
-        else:
-            st.info("Online research returned insufficient model-specific evidence to verify an issue. DG has not interpreted that as 'no known issues'.")
-            st.markdown("**Questions still worth asking on any used car:**")
-            st.markdown("- What major maintenance or repairs have been done, and are there invoices?\n- Any warning lights, intermittent faults, oil/coolant use or starting issues?\n- When were the gearbox/transmission and other scheduled fluids last serviced?\n- Any recent tyres, brakes, suspension, battery or air-conditioning work?")
+        st.markdown('<div class="dg-section">Buying intelligence</div>',unsafe_allow_html=True)
+        st.markdown('<div class="dg-sub">Model-specific faults, seller questions and likely work exposure — prioritised by severity.</div>',unsafe_allow_html=True)
+        _status_label=_dg_research_status.replace("_"," ").title()
+        st.markdown(f'<div class="dg-status"><b>Research:</b> {_status_label} · <b>live findings:</b> {len(_dg_live_intel)} · <b>saved matches:</b> {max(0,len(_dg_intel)-len(_dg_live_intel))}</div>',unsafe_allow_html=True)
+        if _dg_live_intel: st.success(f"DG found and cross-checked {len(_dg_live_intel)} model-specific buying issue(s).")
+        elif _dg_intel: st.info("Using DG’s existing sourced buying-intelligence bank.")
+        elif _dg_research_status=="research_unavailable": st.warning("Live research was unavailable. DG has not treated that as no known issues.")
+        else: st.info("Not enough model-specific evidence was returned to verify an issue. DG has not treated that as no known issues.")
         if _dg_intel:
-            st.caption("DG matches this car against its growing sourced buying-intelligence bank. Findings are questions to investigate, not a diagnosis.")
+            _sev_order={"High":0,"Medium":1,"Low":2}
+            _dg_intel=sorted(_dg_intel,key=lambda x:_sev_order.get(str(x.get("severity","Medium")).title(),1))
             for _i in _dg_intel:
-                with st.expander(f'{_i["severity"]} · {_i["issue"]}',expanded=True):
-                    st.markdown(f'**Ask the seller:** {_i["ask"]}')
-                    st.markdown(f'**Check before buying:** {_i["check"]}')
-                    _lo=float(_i.get("cost_low",0) or 0); _hi=float(_i.get("cost_high",0) or 0)
-                    _mid=round(((_lo+_hi)/2)/50)*50 if (_lo or _hi) else 0
-                    st.markdown(f'**Estimated repair/work range:** £{_lo:,.0f}–£{_hi:,.0f}')
-                    if _mid:
-                        st.markdown(f'**DG planning allowance:** £{_mid:,.0f}')
-                    st.caption(f'Evidence: {_i.get("source","Sourced model intelligence")} · estimate only; confirm with a garage/parts quote.')
-
-
-        if _dg_intel:
-            _dg_cost_lows=[float(x.get("cost_low",0) or 0) for x in _dg_intel]
-            _dg_cost_highs=[float(x.get("cost_high",0) or 0) for x in _dg_intel]
-            _dg_total_low=sum(_dg_cost_lows); _dg_total_high=sum(_dg_cost_highs)
-            _dg_planning=round((sum((a+b)/2 for a,b in zip(_dg_cost_lows,_dg_cost_highs)))/50)*50
+                import html as _html
+                _sev=str(_i.get("severity","Medium")).title(); _cls=_sev.lower() if _sev in ("High","Medium","Low") else "medium"
+                _issue=_html.escape(str(_i.get("issue","Known issue"))); _ask=_html.escape(str(_i.get("ask","Ask for evidence of relevant maintenance or repair work."))); _check=_html.escape(str(_i.get("check","Inspect and verify before buying."))); _source=_html.escape(str(_i.get("source","Sourced model intelligence")))
+                _lo=float(_i.get("cost_low",0) or 0); _hi=float(_i.get("cost_high",0) or 0); _mid=round(((_lo+_hi)/2)/50)*50 if (_lo or _hi) else 0
+                _cost=(f"£{_lo:,.0f}–£{_hi:,.0f}" if _hi else "Cost not verified"); _plan=(f" · DG allowance £{_mid:,.0f}" if _mid else "")
+                _card=f'<div class="dg-intel-card {_cls}"><div><span class="dg-pill {_cls}">{_sev.upper()}</span><span class="dg-issue">{_issue}</span></div><div class="dg-row"><b>Ask seller</b><br>{_ask}</div><div class="dg-row"><b>Check before buying</b><br>{_check}</div><div class="dg-cost">Likely work: {_cost}{_plan}</div><div class="dg-row" style="font-size:.8rem;color:#667085">Source: {_source}</div></div>' 
+                st.markdown(_card,unsafe_allow_html=True)
+            _dg_cost_lows=[float(x.get("cost_low",0) or 0) for x in _dg_intel]; _dg_cost_highs=[float(x.get("cost_high",0) or 0) for x in _dg_intel]
+            _dg_total_low=sum(_dg_cost_lows); _dg_total_high=sum(_dg_cost_highs); _dg_planning=round((sum((a+b)/2 for a,b in zip(_dg_cost_lows,_dg_cost_highs)))/50)*50
             if _dg_total_high>0:
-                st.markdown("#### Potential model-specific work exposure")
-                st.markdown(f"**£{_dg_total_low:,.0f}–£{_dg_total_high:,.0f}** if all flagged items required work")
-                st.caption(f"DG midpoint planning allowance: £{_dg_planning:,.0f}. Do not automatically deduct this whole amount: these are risks to investigate, not confirmed faults.")
-
+                st.markdown(f'<div class="dg-intel-card"><div class="dg-issue">Potential work exposure</div><div class="dg-cost">£{_dg_total_low:,.0f}–£{_dg_total_high:,.0f}</div><div class="dg-row">Planning allowance: <b>£{_dg_planning:,.0f}</b></div><div class="dg-row" style="font-size:.82rem;color:#667085">Risk exposure only — confirm work before deducting it from the deal.</div></div>',unsafe_allow_html=True)
+        else:
+            with st.expander("General seller questions"):
+                st.markdown("- What major maintenance or repairs have been done, and are there invoices?\n- Any warning lights, intermittent faults, oil/coolant use or starting issues?\n- When were gearbox/transmission and scheduled fluids last serviced?\n- Any recent tyres, brakes, suspension, battery or air-conditioning work?")
         appraisal_record={"date":datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),"display_name":(reg.strip().upper() if str(reg or "").strip() else vehicle),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"description_repair_allowance":detected_repair_cost,"description_repair_items":"; ".join(x["issue"] for x in repair_intel.get("items",[])),"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
         st.session_state["current_appraisal_record"]=appraisal_record
         # Persist repair findings as part of the RESULT, not only as pre-submit form text.
