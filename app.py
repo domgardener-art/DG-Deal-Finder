@@ -262,6 +262,63 @@ COMMON_UK_SPECS={
 
 
 
+
+# ---------- FREE VEHICLE TAXONOMY ----------
+FLEETBYTE_BASE="https://fleetcatalog.disturbingbyte.pt"
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fleetbyte_variants(make,model,year):
+    """Free/no-key taxonomy. Returns normalized variants for cascading selectors."""
+    def get(path,params=None):
+        q=("?"+urlencode(params)) if params else ""
+        req=Request(FLEETBYTE_BASE+path+q,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
+        with urlopen(req,timeout=12) as r:
+            return json.loads(r.read().decode("utf-8"))
+    makes=get("/v1/makes",{"search":make,"pageSize":100}).get("items",[])
+    m=next((x for x in makes if str(x.get("name","")).lower()==make.lower()),None)
+    if not m: return []
+    models=get(f"/v1/makes/{m['id']}/models",{"search":model,"pageSize":100}).get("items",[])
+    mo=next((x for x in models if str(x.get("name","")).lower()==model.lower()),None)
+    if not mo: return []
+    data=get(f"/v1/models/{mo['id']}/variants",{"year":int(year),"pageSize":100})
+    items=data.get("items",[]) if isinstance(data,dict) else []
+    result=[]
+    for v in items:
+        name=str(v.get("name") or v.get("variant") or v.get("trim") or "").strip()
+        fuel=str(v.get("fuelType") or v.get("fuel") or "").strip()
+        gearbox=str(v.get("gearboxType") or v.get("gearbox") or v.get("transmission") or "").strip()
+        engine=""
+        for key in ("engineSize","engine_size","engine","displacement"):
+            val=v.get(key)
+            if val not in (None,""):
+                engine=str(val).strip()
+                break
+        if engine:
+            mm=re.search(r'(\d+(?:\.\d+)?)',engine)
+            if mm:
+                n=float(mm.group(1))
+                if n>20: n=n/1000.0
+                engine=f"{n:.1f}L"
+        result.append({"spec":name,"engine":engine,"fuel":fuel,"gearbox":gearbox,"raw":v})
+    return result
+
+def taxonomy_options(variants,spec="",engine="",fuel=""):
+    rows=list(variants or [])
+    def norm(x): return str(x or "").strip().lower()
+    if spec:
+        rows=[x for x in rows if norm(spec) in norm(x.get("spec")) or norm(x.get("spec")) in norm(spec)]
+    if engine:
+        rows=[x for x in rows if norm(x.get("engine"))==norm(engine)]
+    if fuel:
+        rows=[x for x in rows if norm(x.get("fuel"))==norm(fuel)]
+    def uniq(key):
+        out=[]
+        for x in rows:
+            v=str(x.get(key) or "").strip()
+            if v and v.lower() not in [a.lower() for a in out]: out.append(v)
+        return out
+    return rows,uniq("spec"),uniq("engine"),uniq("fuel"),uniq("gearbox")
+
 # ---------- VEHICLE SPEC CASCADE ----------
 # Reliable local fallback for common UK stock. Live sources augment this when available.
 DG_POWERTRAIN_CATALOG = {
@@ -836,84 +893,67 @@ with tabs[0]:
             selected_model=manual_model.strip()
     if selected_model=="— Choose model —": selected_model=""
 
-    # Spec-first compatible cascade:
-    # Make -> Year -> Model -> Spec -> Engine -> Fuel -> Gearbox.
-    # Each later dropdown is restricted to combinations observed in the current advert sample.
+    # Spec-first selector backed by a separate vehicle taxonomy.
     selector_rows=[]
-    selector_error=""
     if selected_make and selected_model:
-        try:
-            selector_rows=autoza_comparables(selected_make,selected_model,selected_year,50)
-        except Exception as e:
-            selector_error=str(e)
+        try: selector_rows=autoza_comparables(selected_make,selected_model,selected_year,50)
+        except Exception: selector_rows=[]
 
+    taxonomy=[]
+    taxonomy_error=""
+    if selected_make and selected_model:
+        try: taxonomy=fleetbyte_variants(selected_make,selected_model,selected_year)
+        except Exception as e: taxonomy_error=str(e)
+
+    # Live adverts remain valuation evidence. Taxonomy is the compatibility source.
     engines,fuels,gearboxes,derivatives,choice_sources=robust_vehicle_choices(
         selected_make,selected_model,selected_year,selector_rows
     ) if selected_make and selected_model else ([],[],[],[],[])
 
-    def _norm(v):
-        return str(v or "").strip().lower()
+    if taxonomy:
+        _,tax_specs,_,_,_=taxonomy_options(taxonomy)
+        spec_options=tax_specs
+        taxonomy_verified=True
+    else:
+        spec_options=derivatives
+        taxonomy_verified=False
 
-    def _row_text(row):
-        return " ".join(str(row.get(k,"") or "") for k in
-                        ("title","variant","derivative","trim","spec","description","engine","engine_size",
-                         "fuel","fuel_type","transmission","gearbox")).lower()
-
-    def _compatible_rows(rows, spec="", engine="", fuel="", gearbox=""):
-        result=[]
-        for row in rows or []:
-            text=_row_text(row)
-            if spec and _norm(spec) not in text: continue
-            if engine and _norm(engine).replace("l","") not in text.replace("l",""): continue
-            if fuel and _norm(fuel) not in text: continue
-            if gearbox:
-                g=_norm(gearbox)
-                if g=="automatic" and not any(x in text for x in ("automatic","auto","dsg","s tronic","cvt")): continue
-                elif g=="manual" and "manual" not in text: continue
-                elif g not in ("automatic","manual") and g not in text: continue
-            result.append(row)
-        return result
-
-    def _choices_from_rows(rows):
-        if not rows: return [],[],[],[]
-        return build_vehicle_choices(rows)
-
-    # Spec comes immediately after model.
-    selected_spec=st.selectbox(
-        "Spec / derivative",
-        ["— Choose spec —"]+derivatives,
+    selected_spec=st.selectbox("Spec / derivative",["— Choose spec —"]+spec_options,
         disabled=not bool(selected_model),
-        help="Choose the derivative first. Engine, fuel and gearbox choices below are then narrowed to compatible versions where the live data supports it."
-    )
+        help="Spec is selected first. When the free taxonomy has this vehicle/year, all later choices are restricted to valid combinations.")
     if selected_spec.startswith("—"): selected_spec=""
 
     with st.expander("Exact spec not listed?"):
         manual_spec=st.text_input("Spec override",placeholder="e.g. vRS")
         if manual_spec.strip(): selected_spec=manual_spec.strip()
 
-    # Restrict subsequent choices using live rows for the chosen spec.
-    spec_rows=_compatible_rows(selector_rows,spec=selected_spec) if selected_spec else selector_rows
-    live_engines,live_fuels,live_gearboxes,_=_choices_from_rows(spec_rows)
+    if taxonomy_verified and selected_spec:
+        spec_rows,_,engine_options,_,_=taxonomy_options(taxonomy,spec=selected_spec)
+    elif taxonomy_verified:
+        spec_rows=taxonomy
+        _,_,engine_options,_,_=taxonomy_options(taxonomy)
+    else:
+        spec_rows=[]
+        engine_options=engines
 
-    # If live adverts expose compatibility, use ONLY those values. If they do not,
-    # retain the broader fallback list rather than inventing compatibility.
-    engine_options=live_engines if live_engines else engines
     selected_engine=st.selectbox("Engine / powertrain",["— Choose engine —"]+engine_options,
-                                 disabled=not bool(selected_model))
+        disabled=not bool(selected_model))
     if selected_engine.startswith("—"): selected_engine=""
 
-    engine_rows=_compatible_rows(spec_rows,engine=selected_engine) if selected_engine else spec_rows
-    _,engine_fuels,engine_gearboxes,_=_choices_from_rows(engine_rows)
-    fuel_options=engine_fuels if engine_fuels else live_fuels if live_fuels else fuels
-    selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,
-                               disabled=not bool(selected_model))
+    if taxonomy_verified:
+        eng_rows,_,_,fuel_options,_=taxonomy_options(taxonomy,spec=selected_spec,engine=selected_engine)
+    else:
+        fuel_options=fuels
+    selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,disabled=not bool(selected_model))
     if selected_fuel.startswith("—"): selected_fuel=""
 
-    fuel_rows=_compatible_rows(engine_rows,fuel=selected_fuel) if selected_fuel else engine_rows
-    _,_,fuel_gearboxes,_=_choices_from_rows(fuel_rows)
-    gearbox_options=fuel_gearboxes if fuel_gearboxes else engine_gearboxes if engine_gearboxes else live_gearboxes if live_gearboxes else gearboxes
+    if taxonomy_verified:
+        final_rows,_,_,_,gearbox_options=taxonomy_options(
+            taxonomy,spec=selected_spec,engine=selected_engine,fuel=selected_fuel)
+    else:
+        gearbox_options=gearboxes
     selected_gearbox=st.selectbox("Gearbox",["— Choose gearbox —"]+gearbox_options,
-                                  disabled=not bool(selected_model))
+        disabled=not bool(selected_model))
     if selected_gearbox.startswith("—"): selected_gearbox=""
 
     with st.expander("Exact engine not listed?"):
@@ -921,12 +961,10 @@ with tabs[0]:
         if manual_engine.strip(): selected_engine=manual_engine.strip()
 
     if selected_make and selected_model:
-        if choice_sources:
-            st.caption("Vehicle choices: "+", ".join(choice_sources)+".")
-        if selected_spec and spec_rows:
-            st.caption(f"Compatibility filter: {len(spec_rows)} current advert(s) support the selected spec before engine/fuel/gearbox filtering.")
-        elif selected_spec and not spec_rows:
-            st.warning("No current advert in the sample confirms this exact spec combination. DG will not claim the remaining choices are derivative-verified.")
+        if taxonomy_verified:
+            st.success("Compatibility verified by vehicle taxonomy — incompatible engine, fuel and gearbox choices are removed.")
+        else:
+            st.info("No derivative-level taxonomy record was returned for this exact vehicle/year. DG is using broader fallback choices and will not claim they are compatibility-verified.")
     cat_mileage=st.number_input("Mileage",0,500000,0,1000,key="catalogue_mileage")
     reg_manual=st.text_input("Registration (optional)",placeholder="e.g. DA59 XDG")
     if selected_make and selected_model:
