@@ -292,6 +292,84 @@ def _num(d,*keys):
             except: pass
     return None
 
+def _text(car,*keys):
+    value=_pick(car,*keys)
+    return str(value or "").strip()
+
+def vehicle_search_text(car):
+    parts=[_text(car,"title","vehicle","name","derivative"),_text(car,"description"),_text(car,"fuel","fuel_type","fuelType"),_text(car,"transmission","gearbox")]
+    return " ".join(x for x in parts if x).lower()
+
+def extract_fuel(car):
+    explicit=_text(car,"fuel","fuel_type","fuelType").title()
+    if explicit: return explicit
+    txt=vehicle_search_text(car)
+    for label,words in [("Plug-in Hybrid",["plug-in hybrid","phev"]),("Hybrid",["hybrid","hev"]),("Electric",["electric","ev"]),("Diesel",["diesel","tdi","crdi","dci","hdi"]),("Petrol",["petrol","tsi","tfsi","ecoboost","gdi"] )]:
+        if any(w in txt for w in words): return label
+    return ""
+
+def extract_gearbox(car):
+    explicit=_text(car,"transmission","gearbox").title()
+    if explicit:
+        if "Auto" in explicit: return "Automatic"
+        if "Manual" in explicit: return "Manual"
+        return explicit
+    txt=vehicle_search_text(car)
+    if any(w in txt for w in ["automatic"," auto "," dsg","cvt","e-cvt","dct","steptronic","s tronic","tiptronic"]): return "Automatic"
+    if "manual" in txt: return "Manual"
+    return ""
+
+def extract_engine(car):
+    # Prefer structured engine fields when the source supplies them.
+    for key in ("engine","engine_size","engineSize","engine_capacity","engineCapacity"):
+        val=_pick(car,key)
+        if val not in (None,""):
+            txt=str(val).strip()
+            m=re.search(r"(\d\.\d)\s*[Ll]?",txt)
+            if m: return m.group(1)+"L"
+            try:
+                n=float(re.sub(r"[^0-9.]","",txt))
+                if n>=500: return f"{n/1000:.1f}L"
+                if 0.5<=n<=8: return f"{n:.1f}L"
+            except: pass
+    txt=" "+vehicle_search_text(car)+" "
+    m=re.search(r"(?<!\d)([0-6]\.\d)\s*l?(?!\d)",txt,re.I)
+    if m: return m.group(1)+"L"
+    # EV battery size is useful as the engine/powertrain choice.
+    m=re.search(r"(?<!\d)(\d{2,3}(?:\.\d+)?)\s*kwh",txt,re.I)
+    if m: return m.group(1)+"kWh"
+    return ""
+
+def extract_derivative(car):
+    title=_text(car,"derivative","title","vehicle","name")
+    if not title: return ""
+    # Strip leading make/model/year where possible, but retain the useful engine/trim/gearbox phrase.
+    title=re.sub(r"^\s*(19|20)\d{2}\s+","",title).strip()
+    return title
+
+def build_vehicle_choices(rows):
+    engines=sorted({extract_engine(c) for c in rows or [] if extract_engine(c)}, key=lambda x:("kWh" in x,x))
+    fuels=sorted({extract_fuel(c) for c in rows or [] if extract_fuel(c)})
+    gearboxes=sorted({extract_gearbox(c) for c in rows or [] if extract_gearbox(c)})
+    derivatives=[]
+    seen=set()
+    for c in rows or []:
+        d=extract_derivative(c)
+        if d and d.lower() not in seen:
+            seen.add(d.lower()); derivatives.append(d)
+    return engines,fuels,gearboxes,derivatives[:40]
+
+def matches_vehicle_choices(car,engine="",fuel="",gearbox="",spec=""):
+    if engine and extract_engine(car).lower()!=engine.lower(): return False
+    if fuel and extract_fuel(car).lower()!=fuel.lower(): return False
+    if gearbox and extract_gearbox(car).lower()!=gearbox.lower(): return False
+    if spec:
+        words=[w.lower() for w in re.findall(r"[A-Za-z0-9]+",spec) if len(w)>1]
+        txt=vehicle_search_text(car)
+        # derivative match is deliberately tolerant: require the meaningful spec tokens to appear.
+        if words and sum(w in txt for w in words) < max(1,min(3,len(words))): return False
+    return True
+
 def estimate_market_from_comps(rows, year, mileage):
     """Average current asking price from relevant for-sale listings.
     Filters obvious mismatches, then uses year/mileage proximity. No sold-price claim."""
@@ -605,21 +683,37 @@ with tabs[0]:
             models=[]
     selected_model=st.selectbox("Model",["— Choose model —"]+models,disabled=not bool(selected_make))
     manual_model=st.text_input("Model override (optional)",placeholder="Use this if the model list is missing or wrong")
-    if manual_model.strip():
-        selected_model=manual_model.strip()
-    selected_spec=st.text_input("Exact spec / derivative",placeholder="e.g. 1.5 TSI 150 R-Line DSG")
+    if manual_model.strip(): selected_model=manual_model.strip()
     if selected_model=="— Choose model —": selected_model=""
-    specs=COMMON_UK_SPECS.get((selected_make,selected_model),[])
-    if specs:
-        selected_spec=st.selectbox("Trim / spec",[""]+specs)
-    else:
-        selected_spec=""
-        if selected_model:
-            st.info("Exact UK trim isn't in the free catalogue yet, so DG won't guess it.")
+
+    # Build engine/fuel/gearbox/spec choices from real current adverts for this make/model/year.
+    selector_rows=[]
+    selector_error=""
+    if selected_make and selected_model:
+        try:
+            selector_rows=autoza_comparables(selected_make,selected_model,selected_year,50)
+        except Exception as e:
+            selector_error=str(e)
+    engines,fuels,gearboxes,derivatives=build_vehicle_choices(selector_rows)
+    c1,c2=st.columns(2)
+    selected_engine=c1.selectbox("Engine / powertrain",[""]+engines,help="Choices found in current adverts for this model/year range.")
+    selected_fuel=c2.selectbox("Fuel",[""]+fuels)
+    c1,c2=st.columns(2)
+    selected_gearbox=c1.selectbox("Gearbox",[""]+gearboxes)
+    selected_spec=c2.selectbox("Spec / derivative",[""]+derivatives,help="Derivative descriptions found in current adverts.")
+    manual_spec=st.text_input("Spec override (optional)",placeholder="e.g. 2.0 TDI vRS DSG")
+    if manual_spec.strip(): selected_spec=manual_spec.strip()
+    if selected_make and selected_model and not selector_rows:
+        st.caption("No live derivative choices were returned, so use the spec override if needed.")
+    elif selector_rows:
+        st.caption(f"Engine/spec choices built from {len(selector_rows)} current advert(s). You can still override the exact derivative.")
     cat_mileage=st.number_input("Mileage",0,500000,0,1000,key="catalogue_mileage")
     reg_manual=st.text_input("Registration (optional)",placeholder="e.g. DA59 XDG")
     if selected_make and selected_model:
         label=f"{selected_year} {selected_make} {selected_model}"
+        if selected_engine: label+=f" {selected_engine}"
+        if selected_fuel and selected_fuel.lower() not in label.lower(): label+=f" {selected_fuel}"
+        if selected_gearbox: label+=f" {selected_gearbox}"
         if selected_spec: label+=f" {selected_spec}"
         st.session_state["imp_vehicle"]=label
         st.session_state["imp_mileage"]=int(cat_mileage)
@@ -628,6 +722,10 @@ with tabs[0]:
         st.session_state["selected_make"]=selected_make
         st.session_state["selected_model"]=selected_model
         st.session_state["selected_year"]=selected_year
+        st.session_state["selected_engine"]=selected_engine
+        st.session_state["selected_fuel"]=selected_fuel
+        st.session_state["selected_gearbox"]=selected_gearbox
+        st.session_state["selected_spec"]=selected_spec
         if st.button("GET LIVE MARKET ESTIMATE",use_container_width=True,type="primary"):
             try:
                 with st.spinner("Checking similar UK dealer adverts…"):
@@ -636,7 +734,14 @@ with tabs[0]:
                         simple_model=re.sub(r"[^A-Za-z0-9 ]+"," ",selected_model).strip()
                         if simple_model and simple_model.lower()!=selected_model.lower():
                             comps=autoza_comparables(selected_make,simple_model,selected_year,50)
-                    market=estimate_market_from_comps(comps,selected_year,cat_mileage)
+                    filtered=[c for c in comps if matches_vehicle_choices(c,selected_engine,selected_fuel,selected_gearbox,selected_spec)]
+                    # If an exact derivative is too restrictive, keep engine/fuel/gearbox matching before falling back to the broad model sample.
+                    if not filtered and selected_spec:
+                        filtered=[c for c in comps if matches_vehicle_choices(c,selected_engine,selected_fuel,selected_gearbox,"")]
+                    market=estimate_market_from_comps(filtered or comps,selected_year,cat_mileage)
+                    if market:
+                        market["selector_match_count"]=len(filtered)
+                        market["engine"]=selected_engine; market["fuel"]=selected_fuel; market["gearbox"]=selected_gearbox; market["spec"]=selected_spec
                     if market:
                         market["source"]=f'Average of {market["count"]} closest current for-sale listings'
                 if market:
@@ -660,6 +765,8 @@ with tabs[0]:
         c2.metric("Comparable low",f'£{market["low"]:,.0f}')
         c3.metric("Comparable high",f'£{market["high"]:,.0f}')
         st.caption(f'{market.get("source","Live UK market data")}. Asking price is not the same as achieved sale price.')
+        chosen_bits=[x for x in [market.get("engine"),market.get("fuel"),market.get("gearbox"),market.get("spec")] if x]
+        if chosen_bits: st.caption("Filtered toward: "+" · ".join(chosen_bits)+f' · {market.get("selector_match_count",0)} matching advert(s) before closest-car ranking.')
         if market.get("count",0)<5:
             st.warning(f'Only {market.get("count",0)} suitable listing(s) found. Treat this average as low-confidence.')
         else:
@@ -708,8 +815,38 @@ with tabs[0]:
         default_cat_adjust={"Clear / none known":0,"Cat N":10,"Cat S":20,"Other / unsure":15}[insurance_category]
         category_discount=c2.number_input("Category retail adjustment (%)",0,50,default_cat_adjust,1,
             help="Editable appraisal assumption. This is not a universal market discount.")
-        condition_adjustment=st.number_input("Condition / spec retail adjustment (£)",-5000,5000,0,50,
-            help="Negative for poorer condition/spec; positive for exceptional condition/spec.")
+        condition_grade=st.selectbox(
+            "Condition grade",
+            [1,2,3,4,5],
+            index=1,
+            format_func=lambda x:{
+                1:"1 — Excellent / retail-ready",
+                2:"2 — Good / light prep",
+                3:"3 — Average / noticeable prep",
+                4:"4 — Poor / significant work",
+                5:"5 — Major damage / substantial work"
+            }[x],
+            help="DG 1–5 appraisal grade: 1 is best, 5 is major damage. This is a DG appraisal scale inspired by common vehicle-buying condition grading, not claimed as WBAC's proprietary formula."
+        )
+        default_grade_adjust={1:0,2:0,3:-150,4:-350,5:-750}[condition_grade]
+        grade_adjustment=st.number_input(
+            "Condition grade retail adjustment (£)",-5000,1000,default_grade_adjust,50,
+            help="Editable effect on expected retail after preparation. Keep actual repair/prep spend in the Prep field so costs are not hidden."
+        )
+        history_adjust_default={"Full":0,"Part":-150,"None":-300,"Unknown":-200}.get(service_history,-200)
+        service_adjustment=st.number_input(
+            "Service history retail adjustment (£)",-3000,1000,history_adjust_default,50,
+            help="Editable retail adjustment. Full history defaults to £0; incomplete/unknown history reduces the expected retail."
+        )
+        keys_adjust_default={"2+":0,"1 key":-100,"Unknown":-100}.get(keys,-100)
+        keys_adjustment=st.number_input(
+            "Keys retail adjustment (£)",-1000,500,keys_adjust_default,50,
+            help="Editable retail adjustment for missing/unknown spare keys."
+        )
+        manual_retail_adjustment=st.number_input(
+            "Other retail adjustment (£)",-5000,5000,0,50,
+            help="Optional final adjustment for unusual spec, colour, provenance or another factor not already covered."
+        )
         notes=st.text_area("Notes",value=st.session_state.get("imp_desc",""),placeholder="History, MOT, tyres, damage, keys…")
         risk,risk_reasons=analyse_risk(st.session_state.get("selected_year",2020),mileage,st.session_state.get("selected_make",""),st.session_state.get("selected_model",""),notes)
         mm=st.session_state.get("market_estimate")
@@ -755,7 +892,15 @@ with tabs[0]:
         klass={"BUY":"good","RESEARCH":"warn","PASS":"bad"}[verdict]
         # Turn the raw live-market average into a recommendation for THIS car.
         market_average=float(retail)
-        recommended_retail=max(0, market_average*(1-category_discount/100.0)+condition_adjustment)
+        category_adjustment=-(market_average*(category_discount/100.0))
+        recommended_retail=max(0,
+            market_average
+            + category_adjustment
+            + grade_adjustment
+            + service_adjustment
+            + keys_adjustment
+            + manual_retail_adjustment
+        )
         max_buy=max(0,recommended_retail-prep-fees-contingency-target_margin)
         target_buy=max(0,max_buy-250)
         opening_offer=max(0,target_buy-250)
@@ -774,7 +919,24 @@ with tabs[0]:
 
         st.markdown('<div class="section">Why that retail price?</div>',unsafe_allow_html=True)
         a,b=st.columns(2); a.metric("Live market average",f"£{market_average:,.0f}"); b.metric("DG recommended retail",f"£{recommended_retail:,.0f}")
-        st.caption(f"{insurance_category}: -{category_discount}% · Condition/spec adjustment: £{condition_adjustment:+,.0f}. Category adjustment is editable and is not claimed as a universal market rule.")
+        st.markdown("**How DG got to that selling price**")
+        st.write(f"Live market average: **£{market_average:,.0f}**")
+        st.write(f"{insurance_category}: **£{category_adjustment:+,.0f}** ({category_discount}% adjustment)")
+        st.write(f"Condition grade {condition_grade}: **£{grade_adjustment:+,.0f}**")
+        st.write(f"Service history ({service_history}): **£{service_adjustment:+,.0f}**")
+        st.write(f"Keys ({keys}): **£{keys_adjustment:+,.0f}**")
+        if manual_retail_adjustment:
+            st.write(f"Other retail adjustment: **£{manual_retail_adjustment:+,.0f}**")
+        st.write(f"**DG recommended retail: £{recommended_retail:,.0f}**")
+        st.caption("These are editable appraisal assumptions. Actual preparation spend is deducted separately below, so the app does not hide repair costs inside the retail adjustment.")
+        st.markdown("**How DG got to the maximum buy**")
+        st.write(f"Recommended retail: **£{recommended_retail:,.0f}**")
+        st.write(f"Prep: **−£{prep:,.0f}**")
+        st.write(f"Fees / warranty: **−£{fees:,.0f}**")
+        st.write(f"Contingency: **−£{contingency:,.0f}**")
+        st.write(f"Required contribution: **−£{target_margin:,.0f}**")
+        st.write(f"**Maximum buy: £{max_buy:,.0f}**")
+        st.divider()
         if asking:
             if asking<=target_buy:
                 st.success(f"Seller asking £{asking:,.0f}: inside DG target. Estimated contribution at asking: £{contribution_at_ask:,.0f}.")
@@ -784,64 +946,67 @@ with tabs[0]:
                 st.error(f"Seller asking £{asking:,.0f}: above DG maximum of £{max_buy:,.0f}. Negotiate down or leave it.")
         a,b=st.columns(2); a.metric("Contribution at asking",f"£{contribution_at_ask:,.0f}"); b.metric("ROI at asking",f"{roi_at_ask:.1f}%")
 
-        st.markdown('<div class="section">Deal resilience</div>',unsafe_allow_html=True)
+        st.markdown('<div class="section">What if things go wrong?</div>',unsafe_allow_html=True)
         downside_retail=max(0,recommended_retail-500)
-        downside_prep=prep+500
         stress_retail=downside_retail-(asking+prep+fees+contingency)
-        stress_prep=recommended_retail-(asking+downside_prep+fees+contingency)
-        stress_both=downside_retail-(asking+downside_prep+fees+contingency)
+        stress_prep=recommended_retail-(asking+prep+500+fees+contingency)
+        stress_both=downside_retail-(asking+prep+500+fees+contingency)
         break_even=asking+prep+fees+contingency
-        q1,q2=st.columns(2); q1.metric("Retail -£500",f"£{stress_retail:,.0f}"); q2.metric("Prep +£500",f"£{stress_prep:,.0f}")
-        q1,q2=st.columns(2); q1.metric("Both hit",f"£{stress_both:,.0f}"); q2.metric("Break-even retail",f"£{break_even:,.0f}")
+        st.caption("How much contribution is left if the deal goes against you.")
+        c1,c2=st.columns(2); c1.metric("Sell £500 cheaper",f"£{stress_retail:,.0f}"); c2.metric("Prep £500 dearer",f"£{stress_prep:,.0f}")
+        c1,c2=st.columns(2); c1.metric("Both happen",f"£{stress_both:,.0f}"); c2.metric("Sale price before loss",f"£{break_even:,.0f}")
+        if stress_both<0: st.error(f"If BOTH happen, the deal loses about £{abs(stress_both):,.0f}. Safety margin is poor.")
+        elif stress_both<target_margin/2: st.warning(f"If BOTH happen, about £{stress_both:,.0f} remains. Safety margin is tight.")
+        else: st.success(f"If BOTH happen, about £{stress_both:,.0f} remains. Safety margin is healthy.")
 
-        valuation_risk="High" if not mm else ("Medium" if mm.get("count",0)<5 else "Low")
-        provenance_risk="High" if provenance=="Issue found" or v5c=="Missing / mismatch" else ("Low" if provenance=="Clear" and v5c=="Present & matches" else "Unknown")
-        mechanical_risk=risk
-        st.markdown('<div class="section">Risk breakdown</div>',unsafe_allow_html=True)
-        r1,r2=st.columns(2); r1.metric("Vehicle / mechanical",mechanical_risk); r2.metric("Valuation confidence",valuation_risk)
-        r1,r2=st.columns(2); r1.metric("Provenance",provenance_risk); r2.metric("Commercial resilience","Low" if stress_both>=target_margin*0.5 else ("Medium" if stress_both>0 else "High"))
+        st.markdown('<div class="section">Quick risk check</div>',unsafe_allow_html=True)
+        commercial_risk="Low" if stress_both>=target_margin*0.5 else ("Medium" if stress_both>0 else "High")
+        c1,c2=st.columns(2); c1.metric("Car / repair risk",mechanical_risk); c2.metric("Price confidence",valuation_risk)
+        c1,c2=st.columns(2); c1.metric("History / paperwork",provenance_risk); c2.metric("Deal safety",commercial_risk)
+        if mechanical_risk=="Medium": st.caption("• Car/repair: allow for some mechanical uncertainty.")
+        elif mechanical_risk=="High": st.caption("• Car/repair: high uncertainty — inspect carefully before buying.")
+        if valuation_risk=="Medium": st.caption("• Price: useful guide, but comparable evidence is only medium confidence.")
+        elif valuation_risk=="High": st.caption("• Price: weak comparable evidence — be cautious.")
+        if provenance_risk=="High": st.caption("• History/paperwork: resolve the flagged issue before purchase.")
+        if commercial_risk=="High": st.caption("• Deal safety: poor — a small price/prep change can wipe out the margin.")
+        elif commercial_risk=="Medium": st.caption("• Deal safety: tight — negotiate harder or keep extra contingency.")
+        else: st.caption("• Deal safety: healthy against the stress test above.")
+        if mm and recommended_retail:
+            delta=asking-recommended_retail
+            st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} DG recommended retail." if delta else "Seller asking matches DG recommended retail.")
 
-        if mm and retail:
-            market_mid=mm["retail"]
-            delta=asking-market_mid
-            st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} the average comparable asking price." if delta else "Seller asking matches the comparable median.")
+        st.markdown('<div class="section">Current market picture</div>',unsafe_allow_html=True)
+        if mm and mm.get("rows"):
+            current_prices=[]
+            for car in mm.get("rows",[]):
+                pr=_num(car,"price","asking_price","askingPrice")
+                if pr: current_prices.append(float(pr))
+            if current_prices:
+                current_avg=sum(current_prices)/len(current_prices); current_low=min(current_prices); current_high=max(current_prices)
+                st.metric("Average asking price now",f"£{current_avg:,.0f}")
+                c1,c2=st.columns(2); c1.metric("Cheapest comparable",f"£{current_low:,.0f}"); c2.metric("Highest comparable",f"£{current_high:,.0f}")
+                st.caption(f"{len(current_prices)} current comparable advert(s) · price spread £{current_high-current_low:,.0f}.")
+                if len(current_prices)>=5: st.success("Useful current sample. Compare this with DG recommended retail above.")
+                else: st.warning("Small sample. Treat the average cautiously.")
+        st.caption("Current adverts only. DG will not draw a historical trend until it has real historical price observations.")
 
-        st.markdown('<div class="section">Auto Trader market guide</div>',unsafe_allow_html=True)
-        st.caption("If suitable live listings are unavailable, DG leaves the estimate blank rather than inventing a value.")
-        if at_configured() and reg:
-            try:
-                at_raw=fetch_at_vehicle(reg,mileage)
-                at=normalise_at(at_raw)
-                st.markdown('<div class="card"><div class="label">Official Auto Trader Connect</div><div class="car">Live market intelligence</div><div class="meta">Vehicle lookup using registration and mileage.</div></div>',unsafe_allow_html=True)
-                c1,c2=st.columns(2); c1.metric("Retail",money(at["retail"])); c2.metric("Trade",money(at["trade"]))
-                if at["retail"] is not None:
-                    at_margin=at["retail"]-(asking+prep+fees+contingency)
-                    at_max=max(0,at["retail"]-prep-fees-contingency-target_margin)
-                    c1,c2=st.columns(2); c1.metric("Margin @ AT retail",f"£{at_margin:,.0f}"); c2.metric("Max buy @ target",f"£{at_max:,.0f}")
-                c1,c2=st.columns(2); c1.metric("Private",money(at["private"])); c2.metric("Part exchange",money(at["part_exchange"]))
-                c1,c2=st.columns(2); c1.metric("Retail rating","—" if at["retail_rating"] is None else f'{at["retail_rating"]:.0f}/100'); c2.metric("Days to sell","—" if at["days_to_sell"] is None else f'{at["days_to_sell"]:.0f} days')
-                c1,c2=st.columns(2); c1.metric("Demand",metric_pct(at["demand"])); c2.metric("Supply",metric_pct(at["supply"]))
-                st.metric("Market condition",metric_pct(at["market_condition"]))
-            except Exception as e:
-                st.warning("Auto Trader Connect is configured but the live request did not complete. Check the endpoint/header settings in Streamlit Secrets.")
-                with st.expander("Connection detail"):
-                    st.code(str(e))
-        else:
-            st.markdown('<div class="card"><div class="label">Auto Trader Connect</div><div class="car">Ready for official live data</div><div class="meta">Add your Auto Trader Connect production or sandbox credentials in Streamlit Secrets to activate Retail, Trade, Private, Part Exchange, Retail Rating, Days to Sell, Supply, Demand and Market Condition.</div></div>',unsafe_allow_html=True)
-
-        st.markdown('<div class="section">Market trend</div>',unsafe_allow_html=True)
-        st.markdown(f'<div class="card"><div class="label">6 month retail value</div><div class="car">£{retail:,.0f} estimated retail</div>{trend_svg()}<div class="meta">Preview only — connect live valuation/comparable data before using this trend for buying decisions.</div></div>',unsafe_allow_html=True)
-        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"provenance":provenance,"v5c":v5c,"listing":""}])
+        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}])
         if DATA.exists(): row=pd.concat([pd.read_csv(DATA),row],ignore_index=True)
         row.to_csv(DATA,index=False)
     st.markdown('</div>',unsafe_allow_html=True)
 
 with tabs[1]:
-    st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Market intelligence</div><div class="hero">What is moving?</div><div class="sub">Pricing, demand and days-to-sell signals will live here.</div></div>',unsafe_allow_html=True)
-    st.markdown(f'<div class="card"><div class="label">Retail price movement</div><div class="car">Target market trend</div>{trend_svg()}<div class="meta">No fake data: this becomes live once a valuation/comparables source is connected.</div></div>',unsafe_allow_html=True)
-    a,b=st.columns(2); a.metric("Retail valuation","LIVE" if at_configured() else "—"); b.metric("Days to sell","LIVE" if at_configured() else "—")
-    a,b=st.columns(2); a.metric("Retail rating","LIVE" if at_configured() else "—"); b.metric("Demand","LIVE" if at_configured() else "—")
-    st.markdown('<div class="card"><div class="label">Planned intelligence</div><div class="car">Fastest sellers · biggest margins · falling values</div><div class="meta">Filter by make, model, fuel, age, mileage and retail price band.</div></div></div>',unsafe_allow_html=True)
+    st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Market intelligence</div><div class="hero">Market history</div><div class="sub">DG will build a genuine trend from appraisals you save over time.</div></div>',unsafe_allow_html=True)
+    if DATA.exists():
+        try:
+            hist=pd.read_csv(DATA)
+            st.metric("Saved market observations",f"{len(hist):,}")
+            st.caption("As repeated comparable observations build up, this page can show real price movement rather than a decorative preview line.")
+        except Exception:
+            st.info("No usable saved market history yet.")
+    else:
+        st.info("No saved market history yet. Keep appraising cars and DG will build its own evidence.")
+    st.markdown('</div>',unsafe_allow_html=True)
 
 with tabs[2]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Opportunity list</div><div class="hero">Saved deals</div><div class="sub">Keep your strongest sourcing opportunities in one place.</div></div>',unsafe_allow_html=True)
