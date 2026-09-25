@@ -520,13 +520,16 @@ DG_FAILURE_TERMS=[
 ]
 
 def dg_issue_quality(row):
-    text=" ".join(str(row.get(k,"")) for k in ("issue","ask","check")).lower()
-    issue=str(row.get("issue","")).strip().lower()
-    if not issue or len(issue)<12:return 0
-    if any(p in issue for p in DG_BAD_ISSUE_PHRASES):return 0
-    has_component=any(x in text for x in DG_COMPONENT_TERMS)
-    has_failure=any(x in text for x in DG_FAILURE_TERMS)
-    score=(2 if has_component else 0)+(2 if has_failure else 0)
+    issue=str(row.get("issue","")).strip()
+    low=issue.lower()
+    if not issue or len(issue)<12 or len(issue)>190:return 0
+    if any(p in low for p in DG_BAD_ISSUE_PHRASES):return 0
+    prose_markers=("that is a ","we hold","reliability score","popular cars","get written","newer generation","less time","our database","this page","data is","number of faults","count of","how many","reported faults")
+    if any(p in low for p in prose_markers):return 0
+    has_component=any(x in low for x in DG_COMPONENT_TERMS)
+    has_failure=any(x in low for x in DG_FAILURE_TERMS)
+    if not (has_component and has_failure):return 0
+    score=4
     if row.get("source"):score+=1
     if row.get("year_from") or row.get("engine_terms"):score+=1
     return score
@@ -719,7 +722,7 @@ def assess_seller_description(text, confirmed=None):
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V104 mileage-aware clean intelligence")
+st.caption("DG Deal Finder • V105 strict fault-only intelligence")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3886,6 +3889,7 @@ with tabs[0]:
         _dg_intel+=_dg_live_intel
         _seen_issue=set()
         _dg_intel=[x for x in _dg_intel if not (_dg_norm(x.get("issue","")) in _seen_issue or _seen_issue.add(_dg_norm(x.get("issue",""))))]
+        _dg_intel=dg_clean_issue_rows(_dg_intel)
         # Seed/refresh the learning bank from evidence that has passed DG's matching rules.
         _learn=[]
         for _i in _dg_intel:
@@ -3915,6 +3919,7 @@ with tabs[0]:
         else: st.info("No verified exact match. DG is still showing broader model/fuel evidence where available.")
         if _dg_intel:
             _sev_order={"High":0,"Medium":1,"Low":2}
+            _dg_intel=dg_clean_issue_rows(_dg_intel)
             _dg_intel=sorted(_dg_intel,key=lambda x:_sev_order.get(str(x.get("severity","Medium")).title(),1))
             for _i in _dg_intel:
                 import html as _html
