@@ -340,23 +340,30 @@ def _num(d,*keys):
             except: pass
     return None
 
-def estimate_market_from_comps(rows, target_year, target_mileage):
+def estimate_market_from_comps(rows, year, mileage):
+    """Average current asking price from relevant for-sale listings.
+    Filters obvious mismatches, then uses year/mileage proximity. No sold-price claim."""
     clean=[]
-    for x in rows:
-        if not isinstance(x,dict): continue
-        price=_num(x,"price","asking_price","askingPrice")
-        miles=_num(x,"mileage","miles","odometer")
-        year=_num(x,"year","registration_year","registrationYear")
-        if price and price>0:
-            year=int(year or target_year); miles=float(miles or target_mileage or 0)
-            clean.append((price,miles,year,x))
-    if not clean: return None
-    tm=float(target_mileage or 0)
-    clean.sort(key=lambda z:(abs(z[2]-int(target_year))*30000 + (abs(z[1]-tm) if tm else 0)))
+    for car in rows or []:
+        price=_num(car,"price","asking_price","askingPrice")
+        cy=_num(car,"year","registration_year","registrationYear")
+        cm=_num(car,"mileage","miles","odometer")
+        if not price or price < 500 or price > 250000: continue
+        # reject cars more than 3 model years away when year is supplied
+        if cy and year and abs(cy-float(year))>3: continue
+        # reject extreme mileage mismatches; keep unknown mileage listings
+        if cm and mileage and abs(cm-float(mileage))>60000: continue
+        score=(abs((cy or year)-year)*12000)+(abs((cm or mileage)-mileage))
+        clean.append((score,car,float(price),float(cm or 0),float(cy or 0)))
+    clean.sort(key=lambda x:x[0])
     chosen=clean[:min(10,len(clean))]
-    prices=sorted(z[0] for z in chosen)
-    n=len(prices); median=prices[n//2] if n%2 else (prices[n//2-1]+prices[n//2])/2
-    return {"retail":median,"low":prices[0],"high":prices[-1],"count":len(chosen),"rows":[z[3] for z in chosen]}
+    if not chosen: return None
+    prices=[x[2] for x in chosen]
+    avg=sum(prices)/len(prices)
+    # low/high are observed asking prices in the actual selected sample.
+    return {"retail":avg,"average":avg,"low":min(prices),"high":max(prices),
+            "count":len(chosen),"rows":[x[1] for x in chosen],
+            "source":"Average of closest current for-sale listings"}
 
 def analyse_risk(year,mileage,make,model,notes=""):
     age=max(0,2026-int(year))
@@ -645,6 +652,10 @@ with tabs[0]:
         except Exception:
             models=[]
     selected_model=st.selectbox("Model",["— Choose model —"]+models,disabled=not bool(selected_make))
+    manual_model=st.text_input("Model override (optional)",placeholder="Use this if the model list is missing or wrong")
+    if manual_model.strip():
+        selected_model=manual_model.strip()
+    selected_spec=st.text_input("Exact spec / derivative",placeholder="e.g. 1.5 TSI 150 R-Line DSG")
     if selected_model=="— Choose model —": selected_model=""
     specs=COMMON_UK_SPECS.get((selected_make,selected_model),[])
     if specs:
@@ -671,7 +682,7 @@ with tabs[0]:
                     comps=autoza_comparables(selected_make,selected_model,selected_year,50)
                     market=estimate_market_from_comps(comps,selected_year,cat_mileage)
                     if market:
-                        market["source"]="10 closest live dealer adverts"
+                        market["source"]=f'Average of {market["count"]} closest current for-sale listings'
                     else:
                         guide=autoza_price_guide(selected_make,selected_model)
                         typical=_walk_numbers(guide,["typical","typical_price","median","average","average_price"])
@@ -701,6 +712,10 @@ with tabs[0]:
         c2.metric("Comparable low",f'£{market["low"]:,.0f}')
         c3.metric("Comparable high",f'£{market["high"]:,.0f}')
         st.caption(f'{market.get("source","Live UK market data")}. Asking price is not the same as achieved sale price.')
+        if market.get("count",0)<5:
+            st.warning(f'Only {market.get("count",0)} suitable listing(s) found. Treat this average as low-confidence.')
+        else:
+            st.caption(f'Observed asking range: £{market["low"]:,.0f}–£{market["high"]:,.0f}. Average is based only on the displayed comparable sample.')
         with st.expander(f'Similar cars currently advertised ({len(market.get("rows",[]))})'):
             if not market.get("rows"):
                 st.info("The market service returned price guidance but no individual comparable adverts for this search.")
@@ -717,62 +732,6 @@ with tabs[0]:
                 if dealer: detail+=f' · {dealer}'
                 st.markdown(f'**{i}. {title_txt}** — {detail}')
                 if url: st.markdown(f'[View advert]({url})')
-
-    st.markdown('<div class="section">MOT & reliability intelligence</div>',unsafe_allow_html=True)
-    # Free/no-key model-level MOT outlook works immediately.
-    if selected_make and selected_model and cat_mileage:
-        if st.button("ANALYSE MOT / RELIABILITY",use_container_width=True):
-            try:
-                with st.spinner("Analysing DVSA-derived reliability data…"):
-                    st.session_state["free_mot"]=free_mot_outlook(selected_make,selected_model,selected_year,cat_mileage)
-                    st.session_state["reliability"]=free_model_reliability(selected_make,selected_model)
-            except Exception as e:
-                st.error("Reliability service did not return usable data.")
-                with st.expander("Technical detail"): st.code(str(e))
-        fm=st.session_state.get("free_mot")
-        rel=st.session_state.get("reliability")
-        if fm:
-            st.markdown("**MOT outlook**")
-            st.write(fm.get("text") if isinstance(fm,dict) and fm.get("text") else fm)
-        if rel:
-            st.markdown("**Model reliability**")
-            st.write(rel.get("text") if isinstance(rel,dict) and rel.get("text") else rel)
-
-    # Exact registration history uses the official DVSA API when the user's credentials exist.
-    reg_for_mot=st.session_state.get("imp_reg","")
-    if reg_for_mot:
-        mot_configured=all(st.secrets.get(k) for k in ["DVSA_CLIENT_ID","DVSA_CLIENT_SECRET","DVSA_TOKEN_URL","DVSA_SCOPE","DVSA_API_KEY"])
-        if mot_configured:
-            if st.button("CHECK EXACT MOT HISTORY",use_container_width=True):
-                try:
-                    with st.spinner("Checking official DVSA MOT history…"):
-                        st.session_state["mot_lookup"]=dvsa_mot_lookup(reg_for_mot)
-                except Exception as e:
-                    st.error("Official MOT lookup failed.")
-                    with st.expander("Technical detail"): st.code(str(e))
-            mot=st.session_state.get("mot_lookup")
-            if mot and mot.get("data"):
-                ms=mot_risk_summary(mot["data"])
-                latest=ms["latest"]
-                x1,x2,x3=st.columns(3)
-                x1.metric("Latest MOT",str(latest.get("testResult","—")).title())
-                try: motm=f'{int(latest.get("odometerValue") or 0):,}'
-                except: motm="—"
-                x2.metric("MOT mileage",motm); x3.metric("Expiry",str(latest.get("expiryDate","—")))
-                flags=[]
-                if ms["fails"]: flags.append(f'{ms["fails"]} historic failure(s)')
-                if ms["mileage_warning"]: flags.append("Mileage decreased between recorded tests")
-                repeated=[f"{k} ×{v}" for k,v in ms["recurring"].items() if v>=2]
-                if repeated: flags.append("Recurring: "+", ".join(repeated))
-                if flags: st.warning(" · ".join(flags))
-                with st.expander("Full MOT history"):
-                    for t in ms["tests"]:
-                        st.markdown(f'**{str(t.get("completedDate",""))[:10]} — {t.get("testResult","")} — {t.get("odometerValue","—")} {t.get("odometerUnit","")}**')
-                        for d in t.get("defects",[]) or []: st.write(f'• {d.get("type","")}: {d.get("text","")}')
-        else:
-            st.caption("Exact registration MOT history needs your free DVSA API credentials. Model-level MOT/reliability analysis above works without them.")
-    else:
-        st.caption("Add the registration for exact MOT history once DVSA credentials are connected.")
 
     with st.expander("DG buying checklist"):
         st.markdown("""
@@ -864,20 +823,16 @@ with tabs[0]:
         <b>Above £{thin_ceiling:,.0f}:</b> does not leave enough room for your current target economics.</div></div>""",unsafe_allow_html=True)
 
         valuation_risk="High" if not mm else ("Medium" if mm.get("count",0)<5 else "Low")
-        mot_risk="Unknown"
-        if mot_saved.get("data"):
-            mr2=mot_risk_summary(mot_saved["data"])
-            mot_risk="High" if (mr2["dangerous"] or mr2["mileage_warning"]) else ("Medium" if mr2["fails"]>=2 else "Low")
         provenance_risk="High" if provenance=="Issue found" or v5c=="Missing / mismatch" else ("Low" if provenance=="Clear" and v5c=="Present & matches" else "Unknown")
         mechanical_risk=risk
         st.markdown('<div class="section">Risk breakdown</div>',unsafe_allow_html=True)
-        r1,r2=st.columns(2); r1.metric("Vehicle / mechanical",mechanical_risk); r2.metric("MOT",mot_risk)
-        r1,r2=st.columns(2); r1.metric("Provenance",provenance_risk); r2.metric("Valuation confidence",valuation_risk)
+        r1,r2=st.columns(2); r1.metric("Vehicle / mechanical",mechanical_risk); r2.metric("Valuation confidence",valuation_risk)
+        r1,r2=st.columns(2); r1.metric("Provenance",provenance_risk); r2.metric("Commercial resilience","Low" if stress_both>=target_margin*0.5 else ("Medium" if stress_both>0 else "High"))
 
         if mm and retail:
             market_mid=mm["retail"]
             delta=asking-market_mid
-            st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} the comparable median asking price." if delta else "Seller asking matches the comparable median.")
+            st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} the average comparable asking price." if delta else "Seller asking matches the comparable median.")
 
         st.markdown('<div class="section">Auto Trader market guide</div>',unsafe_allow_html=True)
         if at_configured() and reg:
@@ -903,7 +858,7 @@ with tabs[0]:
 
         st.markdown('<div class="section">Market trend</div>',unsafe_allow_html=True)
         st.markdown(f'<div class="card"><div class="label">6 month retail value</div><div class="car">£{retail:,.0f} estimated retail</div>{trend_svg()}<div class="meta">Preview only — connect live valuation/comparable data before using this trend for buying decisions.</div></div>',unsafe_allow_html=True)
-        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"service_history":service_history,"keys":keys,"provenance":provenance,"v5c":v5c,"listing":""}])
+        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"provenance":provenance,"v5c":v5c,"listing":""}])
         if DATA.exists(): row=pd.concat([pd.read_csv(DATA),row],ignore_index=True)
         row.to_csv(DATA,index=False)
     st.markdown('</div>',unsafe_allow_html=True)
