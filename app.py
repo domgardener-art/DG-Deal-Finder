@@ -14,6 +14,22 @@ import base64
 import mimetypes
 from urllib.parse import urlencode, urlparse, parse_qs, quote
 
+# ---------- MANUAL MOT APPRAISAL ----------
+MOT_COST_RULES=[(("tyre","tire"),90,180,"Tyre"),(("brake pad","brake pads","brake disc","brake discs"),180,450,"Brakes"),(("suspension","spring","coil spring","shock absorber"),180,500,"Suspension"),(("exhaust","emissions"),150,500,"Exhaust / emissions"),(("windscreen","windshield"),120,350,"Windscreen"),(("lamp","light","bulb"),20,120,"Lighting"),(("wiper","washer"),20,100,"Wipers / washers"),(("corrosion","corroded","rust"),250,1000,"Corrosion"),(("oil leak","fluid leak"),100,500,"Leak"),(("bearing","wheel bearing"),150,350,"Wheel bearing"),(("ball joint","bush","bushing"),120,350,"Steering / suspension joint")]
+def analyse_mot_notes(notes):
+    text=(notes or "").lower(); hits=[]; low=high=0; seen=set()
+    for words,lo,hi,label in MOT_COST_RULES:
+        if any(w in text for w in words) and label not in seen:
+            hits.append(label); low+=lo; high+=hi; seen.add(label)
+    return {"items":hits,"low":low,"high":high,"planning":round((low+high)/2) if hits else 0}
+def mot_time_adjustment(months_remaining):
+    m=int(months_remaining)
+    if m>=9:return 0
+    if m>=6:return -50
+    if m>=3:return -150
+    if m>=1:return -250
+    return -350
+
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 DATA = Path(__file__).with_name("deals.csv")
 
@@ -268,38 +284,76 @@ FLEETBYTE_BASE="https://fleetcatalog.disturbingbyte.pt"
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fleetbyte_variants(make,model,year):
-    """Free/no-key taxonomy. Returns normalized variants for cascading selectors."""
+    """Exact-year taxonomy. Variant list is year-filtered; full variant records supply engine data."""
     def get(path,params=None):
         q=("?"+urlencode(params)) if params else ""
         req=Request(FLEETBYTE_BASE+path+q,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
         with urlopen(req,timeout=12) as r:
             return json.loads(r.read().decode("utf-8"))
+
     makes=get("/v1/makes",{"search":make,"pageSize":100}).get("items",[])
-    m=next((x for x in makes if str(x.get("name","")).lower()==make.lower()),None)
+    m=next((x for x in makes if str(x.get("name","")).strip().lower()==make.strip().lower()),None)
     if not m: return []
+
     models=get(f"/v1/makes/{m['id']}/models",{"search":model,"pageSize":100}).get("items",[])
-    mo=next((x for x in models if str(x.get("name","")).lower()==model.lower()),None)
+    mo=next((x for x in models if str(x.get("name","")).strip().lower()==model.strip().lower()),None)
     if not mo: return []
-    data=get(f"/v1/models/{mo['id']}/variants",{"year":int(year),"pageSize":100})
+
+    # CRITICAL: ask the taxonomy for this exact selected year only.
+    data=get(f"/v1/models/{mo['id']}/variants",{"year":int(year),"page":1,"pageSize":100})
     items=data.get("items",[]) if isinstance(data,dict) else []
+
+    def engine_label(v):
+        # Support common API field shapes from both list and full-spec responses.
+        candidates=[
+            v.get("engineSize"),v.get("engine_size"),v.get("displacement"),
+            v.get("engineDisplacement"),v.get("engineCapacity"),v.get("capacity")
+        ]
+        eng=v.get("engine")
+        if isinstance(eng,dict):
+            candidates += [eng.get("size"),eng.get("displacement"),eng.get("capacity"),
+                           eng.get("cc"),eng.get("litres"),eng.get("liters")]
+        elif eng not in (None,""):
+            candidates.append(eng)
+        for val in candidates:
+            if val in (None,""): continue
+            mm=re.search(r'(\d+(?:\.\d+)?)',str(val))
+            if not mm: continue
+            n=float(mm.group(1))
+            if n>20: n=n/1000.0
+            if 0.5 <= n <= 10:
+                return f"{n:.1f}L"
+        return ""
+
     result=[]
-    for v in items:
-        name=str(v.get("name") or v.get("variant") or v.get("trim") or "").strip()
-        fuel=str(v.get("fuelType") or v.get("fuel") or "").strip()
-        gearbox=str(v.get("gearboxType") or v.get("gearbox") or v.get("transmission") or "").strip()
-        engine=""
-        for key in ("engineSize","engine_size","engine","displacement"):
-            val=v.get(key)
-            if val not in (None,""):
-                engine=str(val).strip()
-                break
-        if engine:
-            mm=re.search(r'(\d+(?:\.\d+)?)',engine)
-            if mm:
-                n=float(mm.group(1))
-                if n>20: n=n/1000.0
-                engine=f"{n:.1f}L"
-        result.append({"spec":name,"engine":engine,"fuel":fuel,"gearbox":gearbox,"raw":v})
+    for summary in items:
+        full=summary
+        vid=summary.get("id")
+        # The documented full-variant endpoint contains engine specification.
+        if vid:
+            try:
+                detail=get(f"/v1/variants/{vid}")
+                if isinstance(detail,dict): full={**summary,**detail}
+            except Exception:
+                pass
+
+        # Defensive year guard: even if an upstream API ever ignores ?year=,
+        # reject records that explicitly say they don't cover the selected year.
+        y=int(year)
+        yf=full.get("yearFrom") or full.get("year_from") or full.get("startYear")
+        yt=full.get("yearTo") or full.get("year_to") or full.get("endYear")
+        vy=full.get("year") or full.get("modelYear")
+        try:
+            if vy not in (None,"") and int(vy)!=y: continue
+            if yf not in (None,"") and y<int(yf): continue
+            if yt not in (None,"") and y>int(yt): continue
+        except Exception:
+            pass
+
+        name=str(full.get("name") or full.get("variant") or full.get("trim") or summary.get("name") or "").strip()
+        fuel=str(full.get("fuelType") or full.get("fuel") or summary.get("fuelType") or summary.get("fuel") or "").strip()
+        gearbox=str(full.get("gearboxType") or full.get("gearbox") or full.get("transmission") or summary.get("gearboxType") or "").strip()
+        result.append({"spec":name,"engine":engine_label(full),"fuel":fuel,"gearbox":gearbox,"raw":full,"selected_year":y})
     return result
 
 def taxonomy_options(variants,spec="",engine="",fuel=""):
@@ -1101,6 +1155,18 @@ with tabs[0]:
             "Keys retail adjustment (£)",-1000,500,keys_adjust_default,50,
             help="Editable retail adjustment for missing/unknown spare keys."
         )
+        st.markdown('<div class="section">MOT appraisal</div>',unsafe_allow_html=True)
+        mot_notes=st.text_area("Notes / advisories from last MOT",placeholder="Paste or type the latest MOT advisories here…",help="Buying-cost planning aid only — not an MOT lookup or garage quote.")
+        mot_analysis=analyse_mot_notes(mot_notes)
+        if mot_analysis["items"]:
+            st.caption("Potential cost areas: "+", ".join(mot_analysis["items"]))
+            st.caption(f"Rough planning range: £{mot_analysis['low']:,}–£{mot_analysis['high']:,}.")
+        elif mot_notes.strip():
+            st.caption("No cost category recognised automatically. Review the wording manually.")
+        mot_months=st.slider("Approx. MOT remaining (months)",0,12,12,1)
+        mot_time_adj=st.number_input("MOT time remaining adjustment (£)",-2000,500,int(mot_time_adjustment(mot_months)),25,help="Editable: 9–12m £0; 6–8m -£50; 3–5m -£150; 1–2m -£250; under 1m -£350.")
+        mot_notes_cost=st.number_input("MOT advisory cost allowance (£)",0,5000,int(mot_analysis["planning"]),25,help="Editable likely-cost allowance from the MOT notes. This reduces maximum buy.")
+
         manual_retail_adjustment=st.number_input(
             "Other retail adjustment (£)",-5000,5000,0,50,
             help="Optional final adjustment for unusual spec, colour, provenance or another factor not already covered."
@@ -1157,12 +1223,13 @@ with tabs[0]:
             + grade_adjustment
             + service_adjustment
             + keys_adjustment
+            + mot_time_adj
             + manual_retail_adjustment
         )
-        max_buy=max(0,recommended_retail-prep-fees-contingency-target_margin)
+        max_buy=max(0,recommended_retail-prep-fees-mot_notes_cost-contingency-target_margin)
         target_buy=max(0,max_buy-250)
         opening_offer=max(0,target_buy-250)
-        contribution_at_ask=recommended_retail-(asking+prep+fees+contingency)
+        contribution_at_ask=recommended_retail-(asking+prep+fees+mot_notes_cost+contingency)
         roi_at_ask=(contribution_at_ask/(asking+prep+fees+contingency)*100) if (asking+prep+fees+contingency)>0 else 0
 
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}</div></div>',unsafe_allow_html=True)
@@ -1183,6 +1250,7 @@ with tabs[0]:
         st.write(f"Condition grade {condition_grade}: **£{grade_adjustment:+,.0f}**")
         st.write(f"Service history ({service_history}): **£{service_adjustment:+,.0f}**")
         st.write(f"Keys ({keys}): **£{keys_adjustment:+,.0f}**")
+        st.write(f"MOT time remaining: **£{mot_time_adj:+,.0f}**")
         if manual_retail_adjustment:
             st.write(f"Other retail adjustment: **£{manual_retail_adjustment:+,.0f}**")
         st.write(f"**DG recommended retail: £{recommended_retail:,.0f}**")
