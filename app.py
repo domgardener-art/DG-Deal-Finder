@@ -1233,43 +1233,50 @@ def robust_vehicle_choices(make,model,year,rows):
     return (*merged, sources)
 
 @st.cache_data(ttl=600, show_spinner=False)
-def autoza_comparables(make, model, year, limit=50):
-    """Fetch several result pages so DG does not mistake page one for the whole market."""
-    wanted=max(1,min(int(limit or 50),150))
-    rows=[]
-    seen=set()
-    per_page=50
-    for page in range(1,4):
-        params={"make":str(make).strip(),"model":str(model).strip(),
-                "min_year":max(1990,int(year)-3),"max_year":int(year)+3,
-                "page":page,"limit":per_page}
-        url="https://autoza.co.uk/api/v1/vehicles?"+urlencode(params)
-        req=Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
-        with urlopen(req,timeout=20) as response:
-            payload=json.loads(response.read().decode("utf-8"))
-        batch=[]
-        if isinstance(payload,list):
-            batch=payload
-        elif isinstance(payload,dict):
-            for key in ("vehicles","results","data","items"):
-                value=payload.get(key)
-                if isinstance(value,list):
-                    batch=value; break
-                if isinstance(value,dict):
-                    for sub in ("vehicles","results","items"):
-                        if isinstance(value.get(sub),list):
-                            batch=value[sub]; break
-                    if batch: break
-        if not batch: break
-        for car in batch:
-            if not isinstance(car,dict): continue
-            ident=str(_pick(car,"id","vehicle_id","stock_id","url","advert_url","link") or "")
-            if not ident:
-                ident="|".join(str(_pick(car,k) or "") for k in ("registration","title","price","mileage","year"))
-            if ident in seen: continue
-            seen.add(ident); rows.append(car)
-            if len(rows)>=wanted: return rows
-        if len(batch)<per_page: break
+def autoza_comparables(make, model, year, limit=100):
+    """Live-stock retrieval: strict first, then widen only if the market is thin."""
+    wanted=max(1,min(int(limit or 100),150))
+    queries=[
+        {"make":str(make).strip(),"model":str(model).strip(),"min_year":max(1990,int(year)-1),"max_year":int(year)+1},
+        {"make":str(make).strip(),"model":str(model).strip(),"min_year":max(1990,int(year)-2),"max_year":int(year)+2},
+        {"make":str(make).strip(),"model":str(model).strip(),"min_year":max(1990,int(year)-4),"max_year":int(year)+4},
+        {"make":str(make).strip(),"model":str(model).strip()},
+    ]
+    rows=[]; seen=set()
+    for base_params in queries:
+        for page in range(1,4):
+            params=dict(base_params); params.update({"page":page,"limit":50})
+            url="https://autoza.co.uk/api/v1/vehicles?"+urlencode(params)
+            try:
+                req=Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
+                with urlopen(req,timeout=20) as response:
+                    payload=json.loads(response.read().decode("utf-8"))
+            except Exception:
+                break
+            batch=[]
+            if isinstance(payload,list): batch=payload
+            elif isinstance(payload,dict):
+                for key in ("vehicles","results","data","items"):
+                    value=payload.get(key)
+                    if isinstance(value,list):
+                        batch=value; break
+                    if isinstance(value,dict):
+                        for sub in ("vehicles","results","items","data"):
+                            if isinstance(value.get(sub),list):
+                                batch=value[sub]; break
+                        if batch: break
+            if not batch: break
+            for car in batch:
+                if not isinstance(car,dict): continue
+                ident=str(_pick(car,"id","vehicle_id","stock_id","url","advert_url","link") or "")
+                if not ident:
+                    ident="|".join(str(_pick(car,k) or "") for k in ("registration","title","price","mileage","year"))
+                if ident in seen: continue
+                seen.add(ident); rows.append(car)
+                if len(rows)>=wanted: return rows
+            meta=payload.get("meta",{}) if isinstance(payload,dict) else {}
+            if meta.get("has_more") is False or len(batch)<50: break
+        if len(rows)>=8: break
     return rows
 
 def _num(d,*keys):
@@ -1458,27 +1465,21 @@ def _dg_market_stats_values(payload, make="", model=""):
     return scored[0][1]
 
 def autoza_market_stats(make="", model=""):
-    """Free/no-key Autoza aggregate asking-price fallback."""
-    base="https://autoza.co.uk/api/public/market-stats"
-    attempts=[]
-    if make and model:
-        attempts.append(base+"?make="+quote(str(make))+"&model="+quote(str(model)))
-    if make:
-        attempts.append(base+"?make="+quote(str(make)))
-    attempts.append(base)
-    for url in attempts:
-        try:
-            req=Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
-            with urlopen(req,timeout=10) as resp:
-                payload=json.loads(resp.read().decode("utf-8"))
-            vals=_dg_market_stats_values(payload,make,model)
-            if vals.get("typical",0)>250:
-                vals["source_url"]=url
-                return vals
-        except Exception:
-            continue
+    """Current public endpoint exposes broad make averages; keep only as low-confidence rescue."""
+    url="https://autoza.co.uk/api/public/market-stats"
+    try:
+        req=Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
+        with urlopen(req,timeout=10) as resp:
+            payload=json.loads(resp.read().decode("utf-8"))
+        wanted=str(make or "").strip().lower()
+        for row in (payload.get("pricesByMake") or []):
+            if str(row.get("make","")).strip().lower()==wanted:
+                price=float(row.get("averagePrice") or 0)
+                if price>250:
+                    return {"typical":price,"low":0,"high":0,"count":0,"source_url":url,"broad_make_only":True}
+    except Exception:
+        pass
     return {}
-
 
 def _comp_num(row,*keys):
     for k in keys:
