@@ -110,6 +110,15 @@ def safe_market_snapshot(market, fallback_retail=0):
     if not isinstance(rows,list): rows=[]
     return {"count":max(0,count),"low":num("low",fallback),"high":num("high",fallback),"rows":rows}
 
+def weighted_mot_history_cost(mot_notes_cost, mot_months):
+    """If more than 4 months MOT remains, retain only 15% of prior-MOT note cost weighting."""
+    try: cost=max(0.0,float(mot_notes_cost or 0))
+    except (TypeError,ValueError): cost=0.0
+    try: months=int(mot_months or 0)
+    except (TypeError,ValueError): months=0
+    weight=0.15 if months>4 else 1.0
+    return round(cost*weight,2), weight
+
 def dg_buyer_overview(market_average,recommended_retail,asking,max_buy,category,category_adjustment,condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,prep,other_costs,contingency,target_margin,comp_count,market_low,market_high):
     out=[]
     # Defensive normalization: Streamlit reruns/session state can carry older values.
@@ -1218,37 +1227,7 @@ with tabs[0]:
         st.session_state["selected_fuel"]=selected_fuel
         st.session_state["selected_gearbox"]=selected_gearbox
         st.session_state["selected_spec"]=selected_spec
-        if st.button("GET LIVE MARKET ESTIMATE",use_container_width=True,type="primary"):
-            try:
-                with st.spinner("Checking similar UK dealer adverts…"):
-                    comps=autoza_comparables(selected_make,selected_model,selected_year,50)
-                    if not comps:
-                        simple_model=re.sub(r"[^A-Za-z0-9 ]+"," ",selected_model).strip()
-                        if simple_model and simple_model.lower()!=selected_model.lower():
-                            comps=autoza_comparables(selected_make,simple_model,selected_year,50)
-                    filtered=[c for c in comps if matches_vehicle_choices(c,selected_engine,selected_fuel,selected_gearbox,selected_spec)]
-                    # If an exact derivative is too restrictive, keep engine/fuel/gearbox matching before falling back to the broad model sample.
-                    if not filtered and selected_spec:
-                        filtered=[c for c in comps if matches_vehicle_choices(c,selected_engine,selected_fuel,selected_gearbox,"")]
-                    market=estimate_market_from_comps(filtered or comps,selected_year,cat_mileage)
-                    if market:
-                        market["selector_match_count"]=len(filtered)
-                        market["engine"]=selected_engine; market["fuel"]=selected_fuel; market["gearbox"]=selected_gearbox; market["spec"]=selected_spec
-                    if market:
-                        market["source"]=f'Average of {market["count"]} closest current for-sale listings'
-                if market:
-                    st.session_state["market_estimate"]=market
-                    st.session_state["market_retail"]=int(round(market["retail"]/50)*50)
-                    st.success(f'Found {market["count"]} close comparables · estimated retail £{st.session_state["market_retail"]:,.0f}')
-                else:
-                    st.session_state.pop("market_estimate",None)
-                    st.session_state.pop("market_retail",None)
-                    st.warning("No close live comparables found for that vehicle.")
-            except Exception as e:
-                st.session_state.pop("market_estimate",None)
-                st.session_state.pop("market_retail",None)
-                st.error("The live listing source did not return usable data. DG will not invent a retail value.")
-                with st.expander("Technical detail"): st.code(str(e))
+        st.caption("Live market data is checked automatically when you tap ANALYSE DEAL.")
 
     market=st.session_state.get("market_estimate")
     if market and not isinstance(market,dict):
@@ -1303,7 +1282,7 @@ with tabs[0]:
         reg=st.text_input("Registration",value=st.session_state.get("imp_reg",""),placeholder="e.g. CV60 ZLZ").upper().replace(" ","")
         vehicle=st.text_input("Vehicle",value=st.session_state.get("imp_vehicle",""),placeholder="Make, model and derivative")
         a,b=st.columns(2); mileage=a.number_input("Mileage",0,300000,int(st.session_state.get("imp_mileage",0)),1000); asking=b.number_input("Seller asking (£)",0,100000,int(st.session_state.get("imp_asking",0)),50)
-        a,b=st.columns(2); retail=a.number_input("Retail estimate (£)",0,150000,int(st.session_state.get("market_retail",0)),50,help="Auto-filled from live market data; editable."); prep=b.number_input("Prep budget (£)",0,20000,400,50)
+        a,b=st.columns(2); retail=a.number_input("Retail estimate override (£)",0,150000,0,50,help="Optional. Leave at £0 to use the fresh live-market estimate when you tap ANALYSE DEAL."); prep=b.number_input("Prep budget (£)",0,20000,400,50)
         a,b=st.columns(2); fees=a.number_input("Other buying costs (£)",0,10000,250,25); risk="Medium"
         target_margin=st.number_input("Desired contribution / margin (£)",0,20000,int(st.session_state.min_profit),50,help="Your target gross contribution before fixed overhead and tax.")
         c1,c2=st.columns(2)
@@ -1367,7 +1346,14 @@ with tabs[0]:
             help="Optional final adjustment for unusual spec, colour, provenance or another factor not already covered."
         )
         notes=st.text_area("Notes",value=st.session_state.get("imp_desc",""),placeholder="History, MOT, tyres, damage, keys…")
-        risk,risk_reasons=analyse_risk(st.session_state.get("selected_year",2020),mileage,st.session_state.get("selected_make",""),st.session_state.get("selected_model",""),notes)
+        description_risk=assess_seller_description(source_advert,{"keys":keys,"service_history":service_history,"category":insurance_category}) if source_advert.strip() else {"level":"Unknown","score":0,"flags":[],"positives":[],"questions":[],"conflicts":[]}
+        risk,risk_reasons=analyse_risk(st.session_state.get("selected_year",2020),mileage,st.session_state.get("selected_make",""),st.session_state.get("selected_model","")," ".join(x for x in [notes,source_advert] if x))
+        if description_risk.get("level")=="High":
+            risk="High"; risk_reasons.append("Seller description contains high-risk wording")
+        elif description_risk.get("level")=="Medium" and risk=="Low":
+            risk="Medium"; risk_reasons.append("Seller description contains cautionary wording")
+        if description_risk.get("conflicts"):
+            risk="High"; risk_reasons.append("Seller description conflicts with confirmed appraisal inputs")
         mm=st.session_state.get("market_estimate")
         if not mm:
             risk="High"; risk_reasons.append("No live comparable evidence — valuation confidence is low")
@@ -1405,11 +1391,6 @@ with tabs[0]:
             st.caption("Detected: " + " · ".join([str(x) for x in [st.session_state.get("scan_year"),st.session_state.get("scan_fuel"),st.session_state.get("scan_gearbox")] if x]))
         if source_advert.strip():
             st.markdown('<div class="section">Description intelligence</div>',unsafe_allow_html=True)
-            description_risk=assess_seller_description(source_advert,{
-                "keys":keys,
-                "service_history":service_history,
-                "category":insurance_category
-            })
             if description_risk["level"]=="High": st.error("Seller-description risk: High")
             elif description_risk["level"]=="Medium": st.warning("Seller-description risk: Medium")
             else: st.success("Seller-description risk: Low")
@@ -1425,17 +1406,38 @@ with tabs[0]:
                 with st.expander("Questions to ask the seller"):
                     for question in description_risk["questions"]: st.write("• "+question)
             st.caption("This screens seller wording for risk and contradictions. Seller claims remain unverified; it does not replace inspection, diagnostics or provenance checks.")
-        else:
-            description_risk={"level":"Unknown","score":0,"flags":[],"positives":[],"questions":[],"conflicts":[]}
-
         go=st.form_submit_button("ANALYSE DEAL",use_container_width=True)
     if go:
-        contingency,all_in,margin,roi,max_buy,score,verdict=calc(asking,retail,prep,fees,risk)
-        max_buy=max(0,retail-prep-fees-contingency-target_margin)
+        fresh_market=None
+        if selected_make and selected_model:
+            try:
+                with st.spinner("Checking live market and analysing deal…"):
+                    comps=autoza_comparables(selected_make,selected_model,selected_year,50)
+                    if not comps:
+                        simple_model=re.sub(r"[^A-Za-z0-9 ]+"," ",selected_model).strip()
+                        if simple_model and simple_model.lower()!=selected_model.lower():
+                            comps=autoza_comparables(selected_make,simple_model,selected_year,50)
+                    filtered=[c for c in comps if matches_vehicle_choices(c,selected_engine,selected_fuel,selected_gearbox,selected_spec)]
+                    if not filtered and selected_spec:
+                        filtered=[c for c in comps if matches_vehicle_choices(c,selected_engine,selected_fuel,selected_gearbox,"")]
+                    fresh_market=estimate_market_from_comps(filtered or comps,selected_year,mileage)
+                    if fresh_market:
+                        fresh_market["selector_match_count"]=len(filtered)
+                        fresh_market["engine"]=selected_engine; fresh_market["fuel"]=selected_fuel; fresh_market["gearbox"]=selected_gearbox; fresh_market["spec"]=selected_spec
+                        fresh_market["source"]=f'Average of {fresh_market["count"]} closest current for-sale listings'
+                        st.session_state["market_estimate"]=fresh_market
+                        st.session_state["market_retail"]=int(round(fresh_market["retail"]/50)*50)
+            except Exception:
+                fresh_market=None
+        live_retail=float(st.session_state.get("market_retail",0) or 0) if fresh_market else 0.0
+        appraisal_retail=float(retail or live_retail or 0)
+        effective_mot_history_cost,mot_history_weight=weighted_mot_history_cost(mot_notes_cost,mot_months)
+        contingency,all_in,margin,roi,max_buy,score,verdict=calc(asking,appraisal_retail,prep,fees,risk)
+        max_buy=max(0,appraisal_retail-prep-fees-contingency-target_margin)
         verdict="BUY" if margin>=target_margin and roi>=st.session_state.min_roi and risk!="High" else ("RESEARCH" if margin>=target_margin*.6 and risk!="High" else "PASS")
         klass={"BUY":"good","RESEARCH":"warn","PASS":"bad"}[verdict]
         # Turn the raw live-market average into a recommendation for THIS car.
-        market_average=float(retail)
+        market_average=float(appraisal_retail)
         category_adjustment=-(market_average*(category_discount/100.0))
         recommended_retail=max(0,
             market_average
@@ -1446,12 +1448,12 @@ with tabs[0]:
             + mot_time_adj
             + manual_retail_adjustment
         )
-        max_buy=max(0,recommended_retail-prep-fees-mot_notes_cost-contingency-target_margin)
+        max_buy=max(0,recommended_retail-prep-fees-effective_mot_history_cost-contingency-target_margin)
         target_buy=max_buy-250
         opening_offer=target_buy-250
         target_buy_display=f"£{target_buy:,.0f}" if target_buy>0 else "N/A"
         opening_offer_display=f"£{opening_offer:,.0f}" if opening_offer>0 else "N/A"
-        contribution_at_ask=recommended_retail-(asking+prep+fees+mot_notes_cost+contingency)
+        contribution_at_ask=recommended_retail-(asking+prep+fees+effective_mot_history_cost+contingency)
         roi_at_ask=(contribution_at_ask/(asking+prep+fees+contingency)*100) if (asking+prep+fees+contingency)>0 else 0
 
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}</div></div>',unsafe_allow_html=True)
@@ -1465,8 +1467,10 @@ with tabs[0]:
         </div>""",unsafe_allow_html=True)
 
         st.markdown('<div class="section">DG buyer overview</div>',unsafe_allow_html=True)
+        if mot_months>4 and mot_notes_cost>0:
+            st.caption(f"MOT history weighting: {mot_months} months remain, so prior MOT-note cost is weighted at 15% (£{effective_mot_history_cost:,.0f} of £{mot_notes_cost:,.0f}). Current condition still needs checking.")
         result_market=safe_market_snapshot(market,market_average)
-        buyer_notes=dg_buyer_overview(market_average,recommended_retail,asking,max_buy,insurance_category,category_adjustment,condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,prep,fees,contingency,target_margin,result_market["count"],result_market["low"],result_market["high"])
+        buyer_notes=dg_buyer_overview(market_average,recommended_retail,asking,max_buy,insurance_category,category_adjustment,condition_grade,service_history,keys,mot_months,mot_analysis,effective_mot_history_cost,prep,fees,contingency,target_margin,result_market["count"],result_market["low"],result_market["high"])
         for overview_title,overview_body in buyer_notes:
             st.markdown(f"**{overview_title}:** {overview_body}")
         if not isinstance(description_risk,dict):
@@ -1518,10 +1522,10 @@ with tabs[0]:
 
         st.markdown('<div class="section">What if things go wrong?</div>',unsafe_allow_html=True)
         downside_retail=max(0,recommended_retail-500)
-        stress_retail=downside_retail-(asking+prep+fees+mot_notes_cost+contingency)
+        stress_retail=downside_retail-(asking+prep+fees+effective_mot_history_cost+contingency)
         stress_prep=recommended_retail-(asking+prep+500+fees+mot_notes_cost+contingency)
         stress_both=downside_retail-(asking+prep+500+fees+mot_notes_cost+contingency)
-        break_even=asking+prep+fees+mot_notes_cost+contingency
+        break_even=asking+prep+fees+effective_mot_history_cost+contingency
         st.caption("Quick downside check using the same costs as the main appraisal.")
         st.markdown(f"**£500 lower sale:** £{stress_retail:,.0f} contribution")
         st.caption("DG retail reduced by £500.")
@@ -1546,19 +1550,20 @@ with tabs[0]:
         valuation_risk = "High" if comparable_count==0 else ("Medium" if comparable_count<5 else "Low")
         provenance_risk = "High" if provenance=="Issue found" or v5c=="Missing / mismatch" else ("Medium" if provenance=="Not checked" or v5c=="Not checked" else "Low")
         commercial_risk="Low" if stress_both>=target_margin*0.5 else ("Medium" if stress_both>0 else "High")
+        description_level=description_risk.get("level","Unknown") if isinstance(description_risk,dict) else "Unknown"
+        description_component="Medium" if description_level=="Unknown" else description_level
         risk_rank={"Low":1,"Medium":2,"High":3}
-        overall_risk=max([mechanical_risk,valuation_risk,provenance_risk,commercial_risk],key=lambda x:risk_rank.get(x,2))
-        st.markdown(f"### Overall buying risk: {overall_risk}")
-        st.caption("Low = safer evidence/headroom · High = more caution required.")
-        st.write(f"**Car / repair risk:** {mechanical_risk}  ·  **Valuation risk:** {valuation_risk}")
-        st.write(f"**History / paperwork risk:** {provenance_risk}  ·  **Deal risk:** {commercial_risk}")
+        overall_risk=max([mechanical_risk,valuation_risk,provenance_risk,commercial_risk,description_component],key=lambda x:risk_rank.get(x,2))
+        st.markdown(f"**Overall buying risk: {overall_risk}**")
+        st.caption("Low = more evidence/headroom · High = more caution.")
+        st.write(f"Car/repair **{mechanical_risk}** · Valuation **{valuation_risk}** · History **{provenance_risk}** · Seller wording **{description_level}** · Deal **{commercial_risk}**")
         risk_notes=[]
-        if mechanical_risk!="Low": risk_notes.append("Allow for mechanical/prep uncertainty.")
-        if valuation_risk!="Low": risk_notes.append(f"Only {comparable_count} close comparable advert(s), so valuation confidence is limited.")
-        if provenance_risk!="Low": risk_notes.append("Resolve provenance/V5C uncertainty before buying.")
-        if commercial_risk=="High": risk_notes.append("A modest retail/prep change can wipe out the contribution.")
-        elif commercial_risk=="Medium": risk_notes.append("Commercial headroom is limited.")
-        for risk_note in risk_notes: st.caption("• "+risk_note)
+        if mechanical_risk!="Low": risk_notes.append("mechanical/prep uncertainty")
+        if valuation_risk!="Low": risk_notes.append(f"only {comparable_count} close comparable(s)")
+        if provenance_risk!="Low": risk_notes.append("history/paperwork needs resolving")
+        if commercial_risk=="High": risk_notes.append("small price/prep changes can wipe out margin")
+        elif commercial_risk=="Medium": risk_notes.append("commercial headroom is limited")
+        if risk_notes: st.caption("Why: "+" · ".join(risk_notes)+".")
         if mm and recommended_retail:
             delta=asking-recommended_retail
             st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} DG recommended retail." if delta else "Seller asking matches DG recommended retail.")
@@ -1566,12 +1571,12 @@ with tabs[0]:
         st.markdown('<div class="section">Market evidence</div>',unsafe_allow_html=True)
         comparable_count=int(market.get("count",0) or 0)
         if comparable_count<=1:
-            st.warning("Thin market evidence: only 1 close comparable. Treat the retail estimate as provisional and inspect the advert below.")
+            st.warning("Low market confidence · 1 close comparable. Treat retail as provisional.")
         elif comparable_count<5:
             st.warning(f"Limited market evidence: {comparable_count} close comparables. Useful as a guide, but not a strong market sample.")
         else:
             st.success(f"Market evidence: {comparable_count} close comparables gives a more useful current asking-price sample.")
-        st.caption("DG uses current asking-price adverts here. It will only show historical price/stock trends once real observations have been saved over time.")
+        st.caption("Current asking-price evidence only. Historical trends appear once enough real observations have been saved.")
 
         row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}])
         if DATA.exists(): row=pd.concat([pd.read_csv(DATA),row],ignore_index=True)
