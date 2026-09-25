@@ -589,7 +589,7 @@ def assess_seller_description(text, confirmed=None):
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V95 bid-first finish + mileage risks")
+st.caption("DG Deal Finder • V96 consolidated bid decision")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3815,7 +3815,13 @@ with tabs[0]:
             st.success("No unresolved repair phrase recognised automatically. Still inspect and diagnose the vehicle before purchase.")
         st.markdown('<div class="dg-section">4 · Bid decision</div>',unsafe_allow_html=True)
         _dg_bid_position=(f"Seller asking £{float(asking):,.0f}" if float(asking or 0)>0 else "No seller asking price entered")
-        st.markdown(f"""<div class="dg-intel-card" style="border-left-color:#0f1b33"><div class="dg-issue">Your numbers to bid</div><div class="dg-row">{_dg_bid_position}</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px"><div><small>OPEN AT</small><div style="font-size:1.45rem;font-weight:800">£{opening_offer:,.0f}</div></div><div><small>AIM TO BUY</small><div style="font-size:1.45rem;font-weight:800">£{target_buy:,.0f}</div></div><div><small>MAXIMUM BUY</small><div style="font-size:1.45rem;font-weight:800">£{max_buy:,.0f}</div></div><div><small>ADVERTISE</small><div style="font-size:1.45rem;font-weight:800">£{recommended_retail:,.0f}</div></div></div><div class="dg-row"><b>Bid includes:</b> prep £{float(prep):,.0f} · other buying costs £{float(other_costs):,.0f} · MOT allowance £{float(mot_advisory_allowance):,.0f} · contingency £{float(contingency):,.0f} · target contribution £{float(target_margin):,.0f}</div></div>""",unsafe_allow_html=True)
+        if float(asking or 0)<=0:
+            stress_retail_display=stress_prep_display=stress_both_display="N/A — enter seller asking"
+        else:
+            stress_retail_display=f"£{stress_retail:,.0f}"
+            stress_prep_display=f"£{stress_prep:,.0f}"
+            stress_both_display=f"£{stress_both:,.0f}"
+        st.markdown(f"""<div class="dg-intel-card" style="border-left-color:#0f1b33"><div class="dg-issue">Your numbers to bid</div><div class="dg-row">{_dg_bid_position}</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px"><div><small>OPEN AT</small><div style="font-size:1.45rem;font-weight:800">£{opening_offer:,.0f}</div></div><div><small>AIM TO BUY</small><div style="font-size:1.45rem;font-weight:800">£{target_buy:,.0f}</div></div><div><small>MAXIMUM BUY</small><div style="font-size:1.45rem;font-weight:800">£{max_buy:,.0f}</div></div><div><small>ADVERTISE</small><div style="font-size:1.45rem;font-weight:800">£{recommended_retail:,.0f}</div></div></div><div class="dg-row"><b>Bid includes:</b> prep £{float(prep):,.0f} · other buying costs £{float(fees):,.0f} · MOT allowance £{float(effective_mot_history_cost):,.0f} · contingency £{float(contingency):,.0f} · target contribution £{float(target_margin):,.0f}</div><div class="dg-row"><b>If things go wrong</b><br>£500 lower retail: {stress_retail_display} · £500 extra prep: {stress_prep_display} · both: {stress_both_display}</div></div>""",unsafe_allow_html=True)
         st.markdown('<div class="dg-section">5 · Save appraisal</div>',unsafe_allow_html=True)
         reg_preview=str(record_preview.get("registration","") or "").strip().upper()
         if reg_preview:
