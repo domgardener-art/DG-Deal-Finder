@@ -8,6 +8,8 @@ import urllib.request
 import urllib.error
 import re
 import html
+import base64
+import mimetypes
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 DATA = Path(__file__).with_name("deals.csv")
@@ -190,6 +192,60 @@ def metric_pct(v):
 
 
 
+
+def scan_advert_image(uploaded):
+    """Use OpenAI vision to turn an advert screenshot into structured vehicle data."""
+    api_key=str(_secret("OPENAI_API_KEY",""))
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured in Streamlit Secrets.")
+    raw=uploaded.getvalue()
+    mime=uploaded.type or mimetypes.guess_type(uploaded.name)[0] or "image/jpeg"
+    data_url=f"data:{mime};base64,"+base64.b64encode(raw).decode()
+    schema={
+      "name":"vehicle_advert",
+      "schema":{
+        "type":"object","additionalProperties":False,
+        "properties":{
+          "vehicle":{"type":"string"},
+          "registration":{"type":"string"},
+          "year":{"type":["integer","null"]},
+          "mileage":{"type":["integer","null"]},
+          "asking_price":{"type":["integer","null"]},
+          "fuel":{"type":"string"},
+          "gearbox":{"type":"string"},
+          "description":{"type":"string"},
+          "stated_faults":{"type":"array","items":{"type":"string"}},
+          "confidence":{"type":"string","enum":["high","medium","low"]}
+        },
+        "required":["vehicle","registration","year","mileage","asking_price","fuel","gearbox","description","stated_faults","confidence"]
+      }
+    }
+    body={
+      "model":str(_secret("OPENAI_VISION_MODEL","gpt-5-mini")),
+      "input":[{"role":"user","content":[
+        {"type":"input_text","text":"Read this UK used-car sale advert screenshot. Extract only facts visible in the image. Do not guess missing values. For vehicle, include make/model/derivative if visible. Registration should be blank if not visible. Mileage and asking_price must be whole numbers or null. Summarise the seller description and list explicitly stated faults."},
+        {"type":"input_image","image_url":data_url}
+      ]}],
+      "text":{"format":{"type":"json_schema","name":schema["name"],"strict":True,"schema":schema["schema"]}}
+    }
+    req=urllib.request.Request("https://api.openai.com/v1/responses",
+        data=json.dumps(body).encode(),
+        headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"},
+        method="POST")
+    with urllib.request.urlopen(req,timeout=45) as r:
+        res=json.loads(r.read().decode())
+    # Responses API returns output content blocks; locate output_text.
+    txt=None
+    for item in res.get("output",[]):
+        for c in item.get("content",[]):
+            if c.get("type")=="output_text":
+                txt=c.get("text"); break
+        if txt: break
+    if not txt:
+        raise RuntimeError("Vision service returned no structured advert data.")
+    return json.loads(txt)
+
+
 def import_public_listing(url):
     """Best-effort anonymous import of metadata Facebook exposes on a public URL.
     No login, cookies, account automation or access-control bypass.
@@ -285,8 +341,34 @@ with tabs[0]:
             st.warning("Facebook did not expose this advert to the importer. Use the screenshot/text fallback below.")
             st.session_state["import_error"]=str(e)
 
-    with st.expander("Advert screenshot / text fallback"):
-        st.file_uploader("Screenshot",type=["png","jpg","jpeg","webp"],help="Keeps the advert with the appraisal. Automatic screenshot reading is a later integration.")
+    st.markdown('<div class="section">Scan advert screenshot</div>',unsafe_allow_html=True)
+    advert_shot=st.file_uploader("Upload Marketplace screenshot",type=["png","jpg","jpeg","webp"],help="DG reads the advert and fills the vehicle details automatically.")
+    if advert_shot is not None:
+        st.image(advert_shot,use_container_width=True)
+        if st.button("SCAN ADVERT WITH AI",use_container_width=True,type="primary"):
+            try:
+                with st.spinner("Reading vehicle, mileage and price…"):
+                    scan=scan_advert_image(advert_shot)
+                st.session_state["imp_vehicle"]=scan.get("vehicle") or ""
+                st.session_state["imp_reg"]=(scan.get("registration") or "").replace(" ","").upper()
+                st.session_state["imp_mileage"]=int(scan.get("mileage") or 0)
+                st.session_state["imp_asking"]=int(scan.get("asking_price") or 0)
+                desc=scan.get("description") or ""
+                faults=scan.get("stated_faults") or []
+                st.session_state["imp_desc"]=desc + (("\nStated faults: "+", ".join(faults)) if faults else "")
+                st.session_state["scan_year"]=scan.get("year")
+                st.session_state["scan_fuel"]=scan.get("fuel") or ""
+                st.session_state["scan_gearbox"]=scan.get("gearbox") or ""
+                st.success(f'Advert read · {scan.get("confidence","").title()} confidence. Check the extracted fields below.')
+                st.rerun()
+            except Exception as e:
+                if "OPENAI_API_KEY" in str(e):
+                    st.error("Screenshot AI is ready but needs an OpenAI API key in Streamlit Secrets.")
+                else:
+                    st.error("I couldn't read that screenshot automatically. Try a clearer/full advert screenshot.")
+                    with st.expander("Technical detail"): st.code(str(e))
+
+    with st.expander("Paste advert text instead"):
         pasted=st.text_area("Paste advert text",placeholder="Paste the listing title, price, mileage and description")
         if st.button("EXTRACT PASTED TEXT",use_container_width=True) and pasted:
             blob=pasted
@@ -306,10 +388,15 @@ with tabs[0]:
         a,b=st.columns(2); mileage=a.number_input("Mileage",0,300000,int(st.session_state.get("imp_mileage",0)),1000); asking=b.number_input("Seller asking (£)",0,100000,int(st.session_state.get("imp_asking",0)),50)
         a,b=st.columns(2); retail=a.number_input("Retail estimate (£)",0,150000,0,50); prep=b.number_input("Prep budget (£)",0,20000,400,50)
         a,b=st.columns(2); fees=a.number_input("Fees / warranty (£)",0,10000,250,25); risk=b.selectbox("Risk",["Low","Medium","High"],1)
-        notes=st.text_area("Notes",placeholder="History, MOT, tyres, damage, keys…")
+        target_margin=st.number_input("Desired contribution / margin (£)",0,20000,int(st.session_state.min_profit),50,help="Your target gross contribution before fixed overhead and tax.")
+        notes=st.text_area("Notes",value=st.session_state.get("imp_desc",""),placeholder="History, MOT, tyres, damage, keys…")
+        if st.session_state.get("scan_year") or st.session_state.get("scan_fuel") or st.session_state.get("scan_gearbox"):
+            st.caption("Detected: " + " · ".join([str(x) for x in [st.session_state.get("scan_year"),st.session_state.get("scan_fuel"),st.session_state.get("scan_gearbox")] if x]))
         go=st.form_submit_button("ANALYSE DEAL",use_container_width=True)
     if go:
         contingency,all_in,margin,roi,max_buy,score,verdict=calc(asking,retail,prep,fees,risk)
+        max_buy=max(0,retail-prep-fees-contingency-target_margin)
+        verdict="BUY" if margin>=target_margin and roi>=st.session_state.min_roi and risk!="High" else ("RESEARCH" if margin>=target_margin*.6 and risk!="High" else "PASS")
         klass={"BUY":"good","RESEARCH":"warn","PASS":"bad"}[verdict]
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles</div><span class="chip {klass}">{verdict} · DG SCORE {score}/100</span></div>',unsafe_allow_html=True)
         a,b=st.columns(2); a.metric("Estimated retail",f"£{retail:,.0f}"); b.metric("Potential margin",f"£{margin:,.0f}")
@@ -322,6 +409,10 @@ with tabs[0]:
                 at=normalise_at(at_raw)
                 st.markdown('<div class="card"><div class="label">Official Auto Trader Connect</div><div class="car">Live market intelligence</div><div class="meta">Vehicle lookup using registration and mileage.</div></div>',unsafe_allow_html=True)
                 c1,c2=st.columns(2); c1.metric("Retail",money(at["retail"])); c2.metric("Trade",money(at["trade"]))
+                if at["retail"] is not None:
+                    at_margin=at["retail"]-(asking+prep+fees+contingency)
+                    at_max=max(0,at["retail"]-prep-fees-contingency-target_margin)
+                    c1,c2=st.columns(2); c1.metric("Margin @ AT retail",f"£{at_margin:,.0f}"); c2.metric("Max buy @ target",f"£{at_max:,.0f}")
                 c1,c2=st.columns(2); c1.metric("Private",money(at["private"])); c2.metric("Part exchange",money(at["part_exchange"]))
                 c1,c2=st.columns(2); c1.metric("Retail rating","—" if at["retail_rating"] is None else f'{at["retail_rating"]:.0f}/100'); c2.metric("Days to sell","—" if at["days_to_sell"] is None else f'{at["days_to_sell"]:.0f} days')
                 c1,c2=st.columns(2); c1.metric("Demand",metric_pct(at["demand"])); c2.metric("Supply",metric_pct(at["supply"]))
