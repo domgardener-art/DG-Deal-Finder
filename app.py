@@ -260,49 +260,29 @@ COMMON_UK_SPECS={
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def _autoza_mcp(tool_name, arguments):
-    body={"jsonrpc":"2.0","id":1,"method":"tools/call",
-          "params":{"name":tool_name,"arguments":arguments}}
-    req=urllib.request.Request(
-        "https://autoza.co.uk/api/mcp",
-        data=json.dumps(body).encode(),
-        headers={"User-Agent":"DG-Deal-Finder/1.0","Content-Type":"application/json","Accept":"application/json, text/event-stream"},
-        method="POST")
-    with urllib.request.urlopen(req,timeout=25) as r:
-        raw=r.read().decode("utf-8","ignore")
-    # MCP may answer JSON or SSE. Extract the last JSON data frame if SSE.
-    candidates=[]
-    if raw.lstrip().startswith("{"):
-        candidates=[raw]
-    else:
-        candidates=[ln[6:] for ln in raw.splitlines() if ln.startswith("data: ")]
-    if not candidates: raise RuntimeError("No response from market service")
-    res=json.loads(candidates[-1])
-    if res.get("error"): raise RuntimeError(str(res["error"]))
-    result=res.get("result",{})
-    # MCP content commonly wraps tool output as JSON text.
-    for c in result.get("content",[]) if isinstance(result,dict) else []:
-        if isinstance(c,dict) and c.get("type")=="text":
-            txt=c.get("text","")
-            try: return json.loads(txt)
-            except: return {"text":txt}
-    return result
-
-def autoza_comparables(make, model, year, limit=25):
-    # Documented MCP tool: live UK dealer stock.
-    payload=_autoza_mcp("search_used_cars",{
-        "make":make,"model":model,"min_year":max(1990,int(year)-1),
-        "max_year":int(year)+1,"limit":min(int(limit),50)
+def autoza_comparables(make, model, year, limit=50):
+    params=urlencode({
+        "make":make, "model":model,
+        "min_year":max(1990,int(year)-2),
+        "max_year":int(year)+2,
+        "page":1, "limit":min(int(limit),50)
     })
-    if isinstance(payload,list): return payload
-    if isinstance(payload,dict):
-        for key in ("vehicles","results","cars","data","listings"):
-            if isinstance(payload.get(key),list): return payload[key]
-    return []
+    url="https://autoza.co.uk/api/v1/vehicles?"+params
+    req=urllib.request.Request(url,headers={
+        "User-Agent":"Mozilla/5.0 DG-Deal-Finder/1.0",
+        "Accept":"application/json"
+    })
+    with urllib.request.urlopen(req,timeout=25) as r:
+        payload=json.loads(r.read().decode("utf-8"))
+    return payload.get("data",[]) if isinstance(payload,dict) else []
 
-def autoza_price_guide(make, model):
-    # Documented MCP tool: current asking-price guidance.
-    return _autoza_mcp("get_uk_price_guide",{"make":make,"model":model})
+@st.cache_data(ttl=900, show_spinner=False)
+def autoza_market_stats():
+    req=urllib.request.Request(
+        "https://autoza.co.uk/api/public/market-stats",
+        headers={"User-Agent":"Mozilla/5.0 DG-Deal-Finder/1.0","Accept":"application/json"})
+    with urllib.request.urlopen(req,timeout=20) as r:
+        return json.loads(r.read().decode("utf-8"))
 
 def _num(d,*keys):
     if not isinstance(d,dict): return None
@@ -585,18 +565,6 @@ with tabs[0]:
                 with st.spinner("Checking similar UK dealer adverts…"):
                     comps=autoza_comparables(selected_make,selected_model,selected_year,25)
                     market=estimate_market_from_comps(comps,selected_year,cat_mileage)
-                    if not market:
-                        guide=autoza_price_guide(selected_make,selected_model)
-                        # Extract common price-guide names recursively.
-                        typical=_pick(guide,"typical","typical_price","typicalPrice","median","average","average_price")
-                        low=_pick(guide,"lowest","low","min","minimum")
-                        high=_pick(guide,"highest","high","max","maximum")
-                        def cv(v):
-                            try: return float(re.sub(r"[^0-9.]","",str(v)))
-                            except: return None
-                        typical,low,high=cv(typical),cv(low),cv(high)
-                        if typical:
-                            market={"retail":typical,"low":low or typical,"high":high or typical,"count":0,"rows":[]}
                 if market:
                     st.session_state["market_estimate"]=market
                     st.session_state["market_retail"]=int(round(market["retail"]/50)*50)
@@ -606,7 +574,9 @@ with tabs[0]:
                     st.session_state.pop("market_retail",None)
                     st.warning("No close live comparables found for that vehicle.")
             except Exception as e:
-                st.error("Live market lookup is temporarily unavailable.")
+                st.session_state.pop("market_estimate",None)
+                st.session_state.pop("market_retail",None)
+                st.error("The live listing source did not return usable data. DG will not invent a retail value.")
                 with st.expander("Technical detail"): st.code(str(e))
 
     market=st.session_state.get("market_estimate")
@@ -635,6 +605,12 @@ with tabs[0]:
         target_margin=st.number_input("Desired contribution / margin (£)",0,20000,int(st.session_state.min_profit),50,help="Your target gross contribution before fixed overhead and tax.")
         notes=st.text_area("Notes",value=st.session_state.get("imp_desc",""),placeholder="History, MOT, tyres, damage, keys…")
         risk,risk_reasons=analyse_risk(st.session_state.get("selected_year",2020),mileage,st.session_state.get("selected_make",""),st.session_state.get("selected_model",""),notes)
+        mm=st.session_state.get("market_estimate")
+        if not mm:
+            risk="High"; risk_reasons.append("No live comparable evidence — valuation confidence is low")
+        elif mm.get("count",0)<5:
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Fewer than 5 close comparables — valuation confidence reduced")
         st.markdown(f"**DG risk analysis: {risk}**")
         st.caption(" · ".join(risk_reasons))
         if st.session_state.get("scan_year") or st.session_state.get("scan_fuel") or st.session_state.get("scan_gearbox"):
