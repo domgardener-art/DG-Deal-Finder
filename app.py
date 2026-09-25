@@ -171,6 +171,52 @@ def extract_source_advert(text):
     return out
 
 
+
+REPAIR_RULES=[
+("Camshaft / valvetrain",["needs camshaft","camshaft needs","camshaft fault","camshaft worn","camshaft issue","camshaft problem"],850,1800),
+("Timing chain",["timing chain rattle","timing chain fault","needs timing chain","timing chain needs"],700,1600),
+("Timing belt",["needs timing belt","needs cambelt","timing belt due","cambelt due"],350,750),
+("Head gasket",["head gasket","headgasket","mixing oil and coolant"],900,2200),
+("Turbo",["turbo fault","turbo failed","needs turbo","turbo needs"],650,1600),
+("Clutch",["clutch slipping","needs clutch","clutch needs"],500,1100),
+("Dual-mass flywheel / clutch",["dual mass","dmf","needs flywheel"],850,1600),
+("Automatic gearbox",["gearbox fault","gearbox issue","transmission fault","gearbox slipping"],1200,3200),
+("DPF",["dpf fault","dpf blocked","blocked dpf","dpf issue"],250,900),
+("EGR",["egr fault","egr issue","needs egr"],250,650),
+("Alternator",["needs alternator","alternator fault","alternator failed"],300,650),
+("Starter motor",["needs starter","starter motor fault","starter failed"],250,550),
+("Air conditioning",["air con not working","aircon not working","a/c not working","ac not working"],150,700),
+("Front brakes",["front brakes needed","needs front brakes","front discs and pads","front pads and discs"],250,500),
+("Rear brakes",["rear brakes needed","needs rear brakes","rear discs and pads","rear pads and discs"],220,450),
+("Brakes",["brakes needed","needs brakes","discs and pads","pads and discs"],350,700),
+("Tyres - pair",["needs two tyres","2 tyres needed","two tyres needed","pair of tyres"],180,360),
+("Tyres - set",["needs four tyres","4 tyres needed","four tyres needed","needs tyres","tyres needed"],350,700),
+("Wheel bearing",["wheel bearing","bearing noise"],180,400),
+("Suspension",["suspension knock","needs suspension","broken spring","coil spring"],200,650),
+("Battery",["needs battery","battery weak","new battery needed"],100,260)]
+PREMIUM_BRANDS={"Porsche":1.75,"Ferrari":3.0,"Lamborghini":3.0,"Aston Martin":2.3,"Bentley":2.4,"Maserati":1.9,"Land Rover":1.45,"Jaguar":1.35,"Mercedes-Benz":1.35,"BMW":1.3,"Audi":1.3,"Lexus":1.2,"Volvo":1.15}
+MODEL_MULTIPLIERS={("Porsche","911"):2.15,("Porsche","Cayenne"):1.75,("Porsche","Macan"):1.55,("BMW","M3"):1.65,("BMW","M4"):1.65,("Audi","RS3"):1.65,("Audi","RS4"):1.7,("Ford","Focus"):1.0,("Ford","Fiesta"):0.95,("Dacia","Sandero"):0.85}
+def vehicle_repair_multiplier(make,model,spec=""):
+    return max(.75,min(float(MODEL_MULTIPLIERS.get((str(make),str(model)),PREMIUM_BRANDS.get(str(make),1.0))),3.0))
+def _repair_is_already_done(text,term):
+    low=text.lower()
+    for root in [x for x in term.split() if len(x)>=4]:
+        if re.search(rf"(new|recent|recently|just)\s+[^.\n]{{0,35}}{re.escape(root)}[^.\n]{{0,35}}(fitted|replaced|done|changed)",low):return True
+        if re.search(rf"{re.escape(root)}[^.\n]{{0,25}}(has been|was|recently|just)?\s*(fitted|replaced|renewed|changed|done)",low):return True
+    return False
+def analyse_description_repairs(text,make="",model="",spec=""):
+    low=(text or "").lower().strip();mult=vehicle_repair_multiplier(make,model,spec)
+    if not low:return {"items":[],"low":0,"high":0,"allowance":0,"multiplier":mult}
+    found=[];families=set()
+    for issue,terms,base_low,base_high in REPAIR_RULES:
+        hit=next((t for t in terms if t in low),None)
+        if not hit or _repair_is_already_done(low,hit):continue
+        family="brakes" if "brake" in issue.lower() else ("tyres" if "tyre" in issue.lower() else issue.lower())
+        if family in families and issue in ("Brakes","Tyres - set"):continue
+        families.add(family);lo=int(round(base_low*mult/25)*25);hi=int(round(base_high*mult/25)*25);mid=int(round(((lo+hi)/2)/25)*25)
+        found.append({"issue":issue,"low":lo,"high":hi,"allowance":mid,"evidence":hit})
+    return {"items":found,"low":sum(x["low"] for x in found),"high":sum(x["high"] for x in found),"allowance":sum(x["allowance"] for x in found),"multiplier":mult}
+
 def assess_seller_description(text, confirmed=None):
     """Risk-screen seller wording. Seller claims remain unverified."""
     text=(text or "").strip()
@@ -381,6 +427,37 @@ div[data-testid="stMetricValue"]{font-size:1.34rem!important;letter-spacing:-.02
 .market-note.good strong{color:#164B2A}
 .market-note.bad{background:#FDECEC;border-color:#E39A9A;color:#742525}
 .market-note.bad strong{color:#742525}
+
+
+/* V30.8 — make the new-appraisal action unmistakable and readable */
+[data-testid="stHorizontalBlock"]:has(button[kind="secondary"]) > [data-testid="column"]:last-child .stButton>button{
+  background:#071A2F!important;
+  color:#FFFFFF!important;
+  border:2px solid #071A2F!important;
+  box-shadow:0 5px 14px rgba(7,26,47,.20)!important;
+}
+[data-testid="stHorizontalBlock"]:has(button[kind="secondary"]) > [data-testid="column"]:last-child .stButton>button:hover{
+  background:#102A43!important;
+  color:#FFFFFF!important;
+  border-color:#102A43!important;
+}
+
+/* V31 QoL: keep the main analyse action obvious on mobile */
+@media (max-width:640px){
+  [data-testid="stForm"] .stFormSubmitButton{
+    position:sticky!important;
+    bottom:10px!important;
+    z-index:40!important;
+    padding-top:8px!important;
+  }
+  [data-testid="stForm"] .stFormSubmitButton>button{
+    box-shadow:0 8px 24px rgba(7,26,47,.28)!important;
+  }
+}
+/* Faster-feeling UI: remove expensive decorative transitions on mobile */
+@media (max-width:640px){
+  .stButton>button,.stFormSubmitButton>button,.stDownloadButton>button,.stLinkButton>a{transition:none!important}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -540,7 +617,7 @@ def fleetbyte_variants(make,model,year):
     def get(path,params=None):
         q=("?"+urlencode(params)) if params else ""
         req=Request(FLEETBYTE_BASE+path+q,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
-        with urlopen(req,timeout=12) as r:
+        with urlopen(req,timeout=5) as r:
             return json.loads(r.read().decode("utf-8"))
 
     makes=get("/v1/makes",{"search":make,"pageSize":100}).get("items",[])
@@ -579,15 +656,11 @@ def fleetbyte_variants(make,model,year):
 
     result=[]
     for summary in items:
+        # SPEED: use the year-filtered variant summary directly.
+        # Older builds fetched every variant detail one-by-one, which could add dozens
+        # of sequential HTTP requests on a mobile appraisal. Missing engine metadata
+        # safely falls back to live adverts/local choices/manual override.
         full=summary
-        vid=summary.get("id")
-        # The documented full-variant endpoint contains engine specification.
-        if vid:
-            try:
-                detail=get(f"/v1/variants/{vid}")
-                if isinstance(detail,dict): full={**summary,**detail}
-            except Exception:
-                pass
 
         # Defensive year guard: even if an upstream API ever ignores ?year=,
         # reject records that explicitly say they don't cover the selected year.
@@ -1274,6 +1347,22 @@ def calc(asking,retail,prep,fees,risk):
 def trend_svg():
     return """<svg viewBox="0 0 200 42" style="width:100%;height:100px;margin-top:8px" aria-label="Illustrative price trend"><line x1="0" y1="38" x2="200" y2="38" stroke="#E2E8F0"/><polyline points="2,12 24,14 46,11 68,18 90,17 112,24 134,20 156,29 178,26 198,31" fill="none" stroke="#1769E0" stroke-width="2.2"/></svg>"""
 
+def reset_appraisal():
+    """Clear every appraisal/widget value while preserving saved deals and settings."""
+    keep={"contingency_pct","min_profit","min_roi"}
+    # Clear widget state and derived appraisal state created during this appraisal.
+    for key in list(st.session_state.keys()):
+        if key not in keep:
+            st.session_state.pop(key,None)
+
+def clear_market_if_vehicle_changed():
+    current=(st.session_state.get("selected_make",""),st.session_state.get("selected_model",""),st.session_state.get("selected_year",""))
+    previous=st.session_state.get("_market_vehicle_identity")
+    if previous is not None and previous!=current:
+        st.session_state.pop("market_estimate",None)
+        st.session_state.pop("market_retail",None)
+    st.session_state["_market_vehicle_identity"]=current
+
 source_advert=st.session_state.get("source_advert_text","")
 source_info={}
 tabs=st.tabs(["APPRAISE","MARKET","DEALS","SETTINGS"])
@@ -1281,7 +1370,7 @@ tabs=st.tabs(["APPRAISE","MARKET","DEALS","SETTINGS"])
 with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG buying desk</div><div class="hero">Appraise a vehicle</div><div class="sub">Vehicle, market, condition and deal risk — one buying decision.</div></div>',unsafe_allow_html=True)
     st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
-    st.caption("Choose make, year and model from built-in lists. Model options update instantly — no API key required.")
+    st.caption("Choose make, year and model. DG keeps the selector lightweight; the deeper live-market search runs only when you tap ANALYSE DEAL.")
     a,b=st.columns(2)
     selected_make=a.selectbox("Make",[""]+UK_MAKES)
     selected_year=b.selectbox("Year",list(range(2026,1995,-1)),index=16)
@@ -1301,7 +1390,7 @@ with tabs[0]:
     # Spec-first selector backed by a separate vehicle taxonomy.
     selector_rows=[]
     if selected_make and selected_model:
-        try: selector_rows=autoza_comparables(selected_make,selected_model,selected_year,50)
+        try: selector_rows=autoza_comparables(selected_make,selected_model,selected_year,30)
         except Exception: selector_rows=[]
 
     taxonomy=[]
@@ -1405,6 +1494,7 @@ with tabs[0]:
         st.session_state["selected_fuel"]=selected_fuel
         st.session_state["selected_gearbox"]=selected_gearbox
         st.session_state["selected_spec"]=selected_spec
+        clear_market_if_vehicle_changed()
         st.caption("Live market data is checked automatically when you tap ANALYSE DEAL.")
 
     market=st.session_state.get("market_estimate")
@@ -1542,6 +1632,15 @@ with tabs[0]:
             help="Optional final adjustment for unusual spec, colour, provenance or another factor not already covered."
         )
         notes=st.text_area("Notes",value=st.session_state.get("imp_desc",""),placeholder="History, MOT, tyres, damage, keys…")
+        repair_text=" ".join(x for x in [source_advert,notes] if str(x or "").strip())
+        repair_intel=analyse_description_repairs(repair_text,selected_make,selected_model,selected_spec)
+        detected_repair_default=int(repair_intel.get("allowance",0) or 0)
+        if repair_intel.get("items"):
+            st.markdown('<div class="section">AI repair intelligence</div>',unsafe_allow_html=True)
+            st.caption("DG identifies likely unresolved work from seller wording, then applies vehicle-sensitive buying allowances. Confirm with diagnosis/quote.")
+            for item in repair_intel["items"]: st.write(f'**{item["issue"]}:** £{item["low"]:,.0f}–£{item["high"]:,.0f} · allowance **£{item["allowance"]:,.0f}**')
+            st.caption(f'Cost factor ×{repair_intel["multiplier"]:.2f} for {selected_make} {selected_model}.')
+        detected_repair_cost=st.number_input("Description-detected repair allowance (£)",0,30000,detected_repair_default,25,help="Suggested from advert/notes and vehicle type. Editable after inspection or a garage quote.")
         description_risk=assess_seller_description(source_advert,{"keys":keys,"service_history":service_history,"category":insurance_category}) if source_advert.strip() else {"level":"Unknown","score":0,"flags":[],"positives":[],"questions":[],"conflicts":[]}
         risk,risk_reasons=analyse_risk(st.session_state.get("selected_year",2020),mileage,st.session_state.get("selected_make",""),st.session_state.get("selected_model","")," ".join(x for x in [notes,source_advert] if x))
         if description_risk.get("level")=="High":
@@ -1588,6 +1687,10 @@ with tabs[0]:
         elif insurance_category=="Other / unsure":
             if risk=="Low": risk="Medium"
             risk_reasons.append("Insurance category needs verification")
+        if detected_repair_cost>0:
+            if detected_repair_cost>=1500: risk="High"
+            elif risk=="Low": risk="Medium"
+            risk_reasons.append(f"Description implies ~£{detected_repair_cost:,.0f} unresolved repair allowance")
         if modification_level=="Light modifications":
             if risk=="Low": risk="Medium"
             risk_reasons.append("Modified vehicle — verify modification quality, insurance implications and buyer demand")
@@ -1626,11 +1729,11 @@ with tabs[0]:
         if selected_make and selected_model:
             try:
                 with st.spinner("Checking live market and analysing deal…"):
-                    comps=autoza_comparables(selected_make,selected_model,selected_year,150)
+                    comps=autoza_comparables(selected_make,selected_model,selected_year,100)
                     if not comps:
                         simple_model=re.sub(r"[^A-Za-z0-9 ]+"," ",selected_model).strip()
                         if simple_model and simple_model.lower()!=selected_model.lower():
-                            comps=autoza_comparables(selected_make,simple_model,selected_year,150)
+                            comps=autoza_comparables(selected_make,simple_model,selected_year,100)
                     exact=[c for c in comps if matches_vehicle_choices(c,selected_engine,selected_fuel,selected_gearbox,selected_spec)]
                     cohort,tier_counts=build_comparable_cohort(
                         comps,selected_engine,selected_fuel,selected_gearbox,selected_spec,30)
@@ -1662,6 +1765,10 @@ with tabs[0]:
             risk="Medium"; risk_reasons.append("Seller description contains cautionary wording")
         if description_risk.get("conflicts"):
             risk="High"; risk_reasons.append("Seller description conflicts with confirmed appraisal inputs")
+        if detected_repair_cost>0:
+            if detected_repair_cost>=1500: risk="High"
+            elif risk=="Low": risk="Medium"
+            risk_reasons.append(f"Description-derived repair allowance £{detected_repair_cost:,.0f}")
         if service_history=="None" and risk=="Low":
             risk="Medium"; risk_reasons.append("No service history")
         if provenance=="Issue found":
@@ -1707,13 +1814,13 @@ with tabs[0]:
             + mot_time_adj
             + manual_retail_adjustment
         )
-        max_buy=max(0,recommended_retail-prep-fees-effective_mot_history_cost-contingency-target_margin)
+        max_buy=max(0,recommended_retail-prep-fees-detected_repair_cost-effective_mot_history_cost-contingency-target_margin)
         target_buy=max_buy-250
         opening_offer=target_buy-250
         target_buy_display=f"£{target_buy:,.0f}" if target_buy>0 else "N/A"
         opening_offer_display=f"£{opening_offer:,.0f}" if opening_offer>0 else "N/A"
-        contribution_at_ask=recommended_retail-(asking+prep+fees+effective_mot_history_cost+contingency)
-        roi_at_ask=(contribution_at_ask/(asking+prep+fees+contingency)*100) if (asking+prep+fees+contingency)>0 else 0
+        contribution_at_ask=recommended_retail-(asking+prep+fees+detected_repair_cost+effective_mot_history_cost+contingency)
+        roi_at_ask=(contribution_at_ask/(asking+prep+fees+detected_repair_cost+contingency)*100) if (asking+prep+fees+detected_repair_cost+contingency)>0 else 0
 
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}</div></div>',unsafe_allow_html=True)
         st.markdown(f"""<div class="card" style="border:2px solid #111827">
@@ -1765,6 +1872,7 @@ with tabs[0]:
         st.write(f"Recommended retail: **£{recommended_retail:,.0f}**")
         st.write(f"Prep: **−£{prep:,.0f}**")
         st.write(f"Other buying costs: **−£{fees:,.0f}**")
+        if detected_repair_cost>0: st.write(f"Description-detected repairs: **−£{detected_repair_cost:,.0f}**")
         st.write(f"MOT advisory allowance: **−£{mot_notes_cost:,.0f}**")
         st.write(f"Contingency: **−£{contingency:,.0f}**")
         st.write(f"Required contribution: **−£{target_margin:,.0f}**")
@@ -1783,7 +1891,7 @@ with tabs[0]:
 
         st.markdown('<div class="section">What if things go wrong?</div>',unsafe_allow_html=True)
         downside_retail=max(0,recommended_retail-500)
-        stress_retail=downside_retail-(asking+prep+fees+effective_mot_history_cost+contingency)
+        stress_retail=downside_retail-(asking+prep+fees+detected_repair_cost+effective_mot_history_cost+contingency)
         stress_prep=recommended_retail-(asking+prep+500+fees+mot_notes_cost+contingency)
         stress_both=downside_retail-(asking+prep+500+fees+mot_notes_cost+contingency)
         break_even=asking+prep+fees+effective_mot_history_cost+contingency
@@ -1857,29 +1965,31 @@ with tabs[0]:
                         st.caption(f"{tier} · Asking £{price:,.0f}" + (f" · {int(miles):,} miles" if miles else ""))
         st.caption("DG prioritises exact matches, then progressively uses the closest same-model evidence when the exact derivative market is thin. Asking prices are not achieved sale prices.")
 
-        appraisal_record={"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
+        appraisal_record={"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"description_repair_allowance":detected_repair_cost,"description_repair_items":"; ".join(x["issue"] for x in repair_intel.get("items",[])),"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
         st.session_state["current_appraisal_record"]=appraisal_record
 
         st.markdown('<div class="section">Finish appraisal</div>',unsafe_allow_html=True)
         save_col,new_col=st.columns(2)
         if save_col.button("SAVE APPRAISAL",use_container_width=True,type="primary"):
-            saved=pd.DataFrame([dict(st.session_state["current_appraisal_record"])])
-            # Timestamp at the moment of saving so the Deals tab shows when it was actually saved.
-            saved.loc[0,"date"]=datetime.now().strftime("%Y-%m-%d %H:%M")
-            if DATA.exists():
-                try:
-                    existing=pd.read_csv(DATA)
-                    saved=pd.concat([existing,saved],ignore_index=True)
-                except Exception:
-                    pass
-            saved.to_csv(DATA,index=False)
-            st.success("Appraisal saved. Open DEALS to view it later.")
-        if new_col.button("APPRAISE NEW VEHICLE",use_container_width=True):
-            for key in ("imp_reg","imp_vehicle","imp_mileage","imp_asking","imp_desc","source_advert_text",
-                        "market_estimate","market_retail","current_appraisal_record",
-                        "selected_make","selected_model","selected_year","selected_engine",
-                        "selected_fuel","selected_gearbox","selected_spec"):
-                st.session_state.pop(key,None)
+            record=dict(st.session_state["current_appraisal_record"])
+            fingerprint="|".join(str(record.get(k,"")) for k in ("registration","vehicle","mileage","asking","recommended_retail"))
+            if st.session_state.get("_last_saved_fingerprint")==fingerprint:
+                st.info("This appraisal is already saved.")
+            else:
+                saved=pd.DataFrame([record])
+                # Timestamp at the moment of saving so the Deals tab shows when it was actually saved.
+                saved.loc[0,"date"]=datetime.now().strftime("%Y-%m-%d %H:%M")
+                if DATA.exists():
+                    try:
+                        existing=pd.read_csv(DATA)
+                        saved=pd.concat([existing,saved],ignore_index=True)
+                    except Exception:
+                        pass
+                saved.to_csv(DATA,index=False)
+                st.session_state["_last_saved_fingerprint"]=fingerprint
+                st.success("Appraisal saved. Open DEALS to view it later.")
+        if new_col.button("APPRAISE NEW VEHICLE",use_container_width=True,key="new_appraisal_btn"):
+            reset_appraisal()
             st.rerun()
     st.markdown('</div>',unsafe_allow_html=True)
 
