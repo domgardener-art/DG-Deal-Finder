@@ -248,6 +248,152 @@ def analyse_description_repairs(text,make="",model="",spec=""):
         found.append({"issue":issue,"low":lo,"high":hi,"allowance":mid,"evidence":hit})
     return {"items":found,"low":sum(x["low"] for x in found),"high":sum(x["high"] for x in found),"allowance":sum(x["allowance"] for x in found),"multiplier":mult}
 
+
+
+DG_INTEL_BANK=Path(__file__).with_name("dg_buying_intelligence.csv")
+DG_INTEL_FIELDS=["fingerprint","make","model","year_from","year_to","engine_terms","fuel","gearbox","issue",
+                 "severity","ask","check","cost_low","cost_high","source","source_url","evidence_type",
+                 "confidence","first_seen","last_seen","times_seen"]
+
+def dg_load_intel_bank():
+    if not DG_INTEL_BANK.exists(): return []
+    try:
+        with DG_INTEL_BANK.open("r",encoding="utf-8-sig",newline="") as f:return list(csv.DictReader(f))
+    except Exception:return []
+
+def dg_store_intel(rows):
+    """Merge sourced intelligence into DG's bank. No source => no learned fact."""
+    if not rows:return
+    now=datetime.datetime.now().strftime("%Y-%m-%d")
+    old=dg_load_intel_bank(); by={r.get("fingerprint",""):r for r in old if r.get("fingerprint")}
+    for r in rows:
+        if not r.get("source") or not r.get("issue"): continue
+        fp=_dg_norm("|".join(map(str,[r.get("make",""),r.get("model",""),r.get("issue",""),r.get("source","")])))
+        if not fp: continue
+        if fp in by:
+            x=by[fp]; x["last_seen"]=now
+            try:x["times_seen"]=str(int(x.get("times_seen") or 1)+1)
+            except:x["times_seen"]="2"
+        else:
+            x={k:str(r.get(k,"") or "") for k in DG_INTEL_FIELDS}; x["fingerprint"]=fp
+            x["first_seen"]=now;x["last_seen"]=now;x["times_seen"]="1";by[fp]=x
+    try:
+        with DG_INTEL_BANK.open("w",encoding="utf-8",newline="") as f:
+            wr=csv.DictWriter(f,fieldnames=DG_INTEL_FIELDS);wr.writeheader();wr.writerows(by.values())
+    except Exception:pass
+
+def dg_bank_buying_intelligence(make,model,year,engine,fuel,gearbox=""):
+    hay=_dg_norm(" ".join(map(str,[engine,fuel,gearbox])))
+    out=[]
+    for r in dg_load_intel_bank():
+        if _dg_norm(r.get("make",""))!=_dg_norm(make):continue
+        rm=_dg_norm(r.get("model",""))
+        if rm and rm!=_dg_norm(model):continue
+        try:
+            yf=int(float(r.get("year_from") or 0)); yt=int(float(r.get("year_to") or 9999))
+            if year and not(yf<=int(year)<=yt):continue
+        except:pass
+        terms=[_dg_norm(x) for x in str(r.get("engine_terms","")).split("|") if x.strip()]
+        if terms and not any(t in hay for t in terms):continue
+        out.append(r)
+    return out
+
+
+DG_WEB_ISSUE_PATTERNS=[
+ ("Timing belt / wet belt",["wet belt","timing belt","belt degradation"],"High",
+  "Has the timing belt/wet belt been inspected or replaced? When, at what mileage, and is there an invoice?",
+  "Check documented belt history, correct oil/service history and any oil-pressure warnings.",500,1800),
+ ("Timing chain",["timing chain","chain rattle","chain stretch"],"High",
+  "Has the timing chain or tensioner ever been inspected or replaced? Is there an invoice?",
+  "Listen for cold-start rattle and verify oil-change history.",700,2500),
+ ("Automatic gearbox / transmission",["gearbox problem","transmission problem","transmission failure","gearbox failure"],"High",
+  "Has the gearbox been serviced or repaired? When was the fluid/filter last changed and is there an invoice?",
+  "Road-test from cold and hot for delay, flare, shudder, harsh shifts or warning messages.",500,3500),
+ ("DSG / dual-clutch gearbox",["dsg problem","dsg failure","mechatronic","dual clutch"],"High",
+  "Has the DSG/dual-clutch gearbox had its required servicing, clutch or mechatronic work? Is there an invoice?",
+  "Check service evidence and road-test for judder, hesitation and harsh engagement.",500,3000),
+ ("DPF / emissions system",["dpf problem","dpf failure","diesel particulate filter","dpf blocked"],"Medium",
+  "Has the DPF ever been cleaned or replaced, and has the car had any recurring emissions warnings?",
+  "Check warning lights, regeneration history where available and whether usage suits a diesel.",250,1800),
+ ("AdBlue / SCR system",["adblue problem","adblue fault","scr fault","adblue failure"],"Medium",
+  "Has the AdBlue/SCR system had any repairs, warning countdowns or replacement parts?",
+  "Check dash warnings and diagnostic history for SCR/NOx/AdBlue faults.",300,1800),
+ ("Cooling system",["coolant leak","water pump failure","thermostat failure","cooling system problem"],"Medium",
+  "Has the water pump, thermostat or any major cooling-system component been replaced? Is there evidence?",
+  "Inspect coolant level/leaks and check warm-up temperature and overheating history.",250,1500),
+ ("Air suspension",["air suspension problem","air suspension failure","air spring failure"],"High",
+  "Has any air-suspension compressor, strut or air spring been replaced? Is there an invoice?",
+  "Check ride height after standing, compressor operation and suspension warnings.",500,3000),
+ ("Transfer case / AWD",["transfer case problem","transfer box problem","transfer case failure","xdrive problem"],"High",
+  "Has the transfer case/transfer box had fluid changes or repairs? Are all four tyres correctly matched?",
+  "Road-test tight turns for binding/judder and inspect tyre size/tread matching.",500,2500),
+ ("Turbocharger",["turbo failure","turbo problem","turbocharger failure"],"High",
+  "Has the turbo ever been replaced or investigated? Any oil-use, smoke or boost issues?",
+  "Check cold start, smoke, boost delivery, oil leaks and service history.",600,2500),
+]
+
+def _dg_strip_html(x):
+    return re.sub(r"\s+"," ",html.unescape(re.sub(r"<[^>]+>"," ",str(x or "")))).strip()
+
+@st.cache_data(ttl=604800,show_spinner=False)
+def dg_web_research(make,model,year,engine,fuel,gearbox):
+    """No-key live web search. Returns snippet evidence; does not diagnose the individual car."""
+    vehicle=" ".join(str(x).strip() for x in [year,make,model,engine,fuel,gearbox] if str(x or "").strip())
+    q=quote_plus(f'{vehicle} common problems reliability faults buying guide')
+    url=f"https://html.duckduckgo.com/html/?q={q}"
+    try:
+        req=Request(url,headers={"User-Agent":"Mozilla/5.0 DG-Deal-Finder/1.0","Accept":"text/html"})
+        with urlopen(req,timeout=12) as resp: page=resp.read().decode("utf-8","replace")
+    except Exception:
+        return []
+    blocks=re.findall(r'<div[^>]+class="[^"]*result[^"]*"[^>]*>(.*?)</div>\s*</div>',page,re.I|re.S)
+    evidence=[]
+    for b in blocks[:12]:
+        lm=re.search(r'class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',b,re.I|re.S)
+        sm=re.search(r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div)>',b,re.I|re.S)
+        if not lm: continue
+        href=html.unescape(lm.group(1))
+        # unwrap DDG redirect when present
+        try:
+            if "uddg=" in href:
+                href=unquote(parse_qs(urlparse(href).query).get("uddg",[href])[0])
+            domain=urlparse(href).netloc.lower().replace("www.","")
+        except Exception: domain=""
+        title=_dg_strip_html(lm.group(2)); snippet=_dg_strip_html(sm.group(1) if sm else "")
+        if domain and snippet: evidence.append({"title":title,"snippet":snippet,"url":href,"domain":domain})
+    learned=[]
+    for issue,terms,severity,ask,check,lo,hi in DG_WEB_ISSUE_PATTERNS:
+        hits=[e for e in evidence if any(t in (e["title"]+" "+e["snippet"]).lower() for t in terms)]
+        domains=sorted(set(e["domain"] for e in hits))
+        if len(domains)<2: continue
+        learned.append({"make":make,"model":model,"year_from":year or "","year_to":year or "",
+          "engine_terms":str(engine or ""),"fuel":fuel,"gearbox":gearbox,"issue":issue,"severity":severity,
+          "ask":ask,"check":check,"cost_low":lo,"cost_high":hi,
+          "source":" + ".join(domains[:3]),"source_url":hits[0]["url"],"evidence_type":"live web cross-check",
+          "confidence":"Medium" if len(domains)==2 else "High"})
+    return learned
+DG_MODEL_BUYING_INTEL=[
+ {"makes":["Peugeot","Citroen","DS","Vauxhall"],"engine_terms":["1.0 puretech","1.2 puretech","eb2","1.2 petrol"],
+  "years":(2012,2022),"issue":"Oil-bathed timing belt degradation / oil-pressure risk",
+  "severity":"High","ask":"Has the wet timing belt been inspected or replaced? If yes, when, at what mileage, and is there an invoice?",
+  "check":"Verify service history and correct oil specification; inspect belt condition and ask about low-oil-pressure warnings.",
+  "cost_low":499,"cost_high":1500,"source":"Manufacturer / Stellantis PureTech support"},
+]
+def dg_buying_intelligence(make,model,year,engine,fuel,description=""):
+    hay=" ".join(map(str,[make,model,engine,fuel,description])).lower()
+    out=[]
+    for x in DG_MODEL_BUYING_INTEL:
+        if make and str(make).lower() not in [m.lower() for m in x["makes"]]: continue
+        y0,y1=x.get("years",(0,9999))
+        try:
+            if year and not (y0<=int(year)<=y1): continue
+        except: pass
+        terms=x.get("engine_terms",[])
+        # Require powertrain evidence. Don't apply a PureTech warning to every Peugeot.
+        if terms and not any(t in hay for t in terms): continue
+        out.append(x)
+    return out
+
 def assess_seller_description(text, confirmed=None):
     """Risk-screen seller wording. Seller claims remain unverified."""
     text=(text or "").strip()
@@ -301,7 +447,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V79 official UK catalogue enrichment")
+st.caption("DG Deal Finder • V83 automatic live buying research")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3426,7 +3572,39 @@ with tabs[0]:
                         st.caption(f"{tier} · Asking £{price:,.0f}" + (f" · {int(miles):,} miles" if miles else ""))
         st.caption("DG prioritises exact matches, then progressively uses the closest same-model evidence when the exact derivative market is thin. Asking prices are not achieved sale prices.")
 
-        appraisal_record={"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"display_name":(reg.strip().upper() if str(reg or "").strip() else vehicle),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"description_repair_allowance":detected_repair_cost,"description_repair_items":"; ".join(x["issue"] for x in repair_intel.get("items",[])),"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
+        _dg_live_intel=dg_web_research(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
+        dg_store_intel(_dg_live_intel)
+        _dg_intel=dg_buying_intelligence(selected_make,selected_model,selected_year,selected_engine,selected_fuel,desc)
+        _dg_intel+=dg_bank_buying_intelligence(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
+        # Include newly researched findings immediately; dedupe by issue.
+        _dg_intel+=_dg_live_intel
+        _seen_issue=set()
+        _dg_intel=[x for x in _dg_intel if not (_dg_norm(x.get("issue","")) in _seen_issue or _seen_issue.add(_dg_norm(x.get("issue",""))))]
+        # Seed/refresh the learning bank from evidence that has passed DG's matching rules.
+        _learn=[]
+        for _i in _dg_intel:
+            _x=dict(_i); _x.update({"make":selected_make,"model":selected_model,
+                "year_from":_i.get("years",(selected_year,selected_year))[0] if isinstance(_i.get("years"),tuple) else _i.get("year_from",selected_year),
+                "year_to":_i.get("years",(selected_year,selected_year))[1] if isinstance(_i.get("years"),tuple) else _i.get("year_to",selected_year),
+                "engine_terms":"|".join(_i.get("engine_terms",[])) if isinstance(_i.get("engine_terms"),list) else _i.get("engine_terms",""),
+                "fuel":selected_fuel,"gearbox":selected_gearbox,"evidence_type":_i.get("evidence_type","model knowledge"),
+                "confidence":_i.get("confidence","Medium")})
+            _learn.append(_x)
+        dg_store_intel(_learn)
+        if _dg_live_intel:
+            st.caption(f"Live research cross-checked {len(_dg_live_intel)} buying issue(s) and added them to DG's knowledge bank.")
+        if _dg_intel:
+            st.markdown("### Model buying intelligence")
+            st.caption("DG matches this car against its growing sourced buying-intelligence bank. Findings are questions to investigate, not a diagnosis.")
+            for _i in _dg_intel:
+                with st.expander(f'{_i["severity"]} · {_i["issue"]}',expanded=True):
+                    st.markdown(f'**Ask the seller:** {_i["ask"]}')
+                    st.markdown(f'**Check before buying:** {_i["check"]}')
+                    st.markdown(f'**Potential exposure:** £{_i["cost_low"]:,.0f}–£{_i["cost_high"]:,.0f}')
+                    st.caption(f'Evidence: {_i["source"]}')
+
+
+        appraisal_record={"date":datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),"display_name":(reg.strip().upper() if str(reg or "").strip() else vehicle),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"description_repair_allowance":detected_repair_cost,"description_repair_items":"; ".join(x["issue"] for x in repair_intel.get("items",[])),"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
         st.session_state["current_appraisal_record"]=appraisal_record
         # Persist repair findings as part of the RESULT, not only as pre-submit form text.
         st.session_state["current_repair_result"]={
@@ -3465,7 +3643,7 @@ with tabs[0]:
                 st.info("This appraisal is already saved.")
             else:
                 saved=pd.DataFrame([record])
-                saved.loc[0,"date"]=datetime.now().strftime("%Y-%m-%d %H:%M")
+                saved.loc[0,"date"]=datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
                 if DATA.exists():
                     try:
                         existing=pd.read_csv(DATA)
