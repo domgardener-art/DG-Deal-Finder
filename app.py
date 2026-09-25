@@ -755,6 +755,47 @@ def _engine_cc_from_label(value):
     if m:return int(round(float(m.group(1))*1000))
     return None
 
+
+def official_year_engine_options(df,make,model,year,fuel=""):
+    """Return engine-size choices actually present in official UK first-registration
+    rows for the selected model/year/fuel. Empty means we cannot safely constrain."""
+    if df is None or df.empty:return []
+    yc=str(int(year)) if year else ""
+    if not yc or yc not in df.columns:return []
+    d=_match_official_make(df,make)
+    if d.empty:return []
+    wanted=str(model or "").strip().lower()
+    d=d[d.apply(lambda r:_dft_model_name(r.get("Make",""),r.get("GenModel","")).lower()==wanted,axis=1)]
+    if d.empty:return []
+    d=d[_dft_number(d[yc])>0]
+    if fuel:
+        nf=_norm_fuel(fuel)
+        d=d[d["Fuel"].map(_norm_fuel).eq(nf)]
+    if d.empty:return []
+    return sorted({_engine_label(a,b) for a,b in zip(d["EngineSizeSimple"],d["EngineSizeDesc"]) if _engine_label(a,b)})
+
+def _engine_band_cc(label):
+    x=str(label or "").lower()
+    m=re.search(r"(\d(?:\.\d)?)\s*l\b",x)
+    if m:return int(round(float(m.group(1))*1000/100.0)*100)
+    nums=[int(n) for n in re.findall(r"(\d{3,4})\s*cc",x)]
+    if nums:return int(round(max(nums)/100.0)*100)
+    return None
+
+def filter_engines_to_official_year(candidate_engines,official_engines):
+    """Map friendly DG/API engine labels onto official year-specific engine bands.
+    If official evidence exists, only compatible engines survive."""
+    official=list(official_engines or [])
+    if not official:return list(candidate_engines or [])
+    bands={_engine_band_cc(x) for x in official if _engine_band_cc(x)}
+    kept=[]
+    for e in candidate_engines or []:
+        cc=_engine_band_cc(e)
+        if cc and cc in bands: kept.append(e)
+    # Include the official band labels too, so a thin friendly catalogue can never
+    # hide an engine that the official year data proves exists.
+    return _merge_unique(kept,official)
+
 def official_combo_verification(df,make,model,year,fuel="",spec="",engine=""):
     """Verify that the chosen combination appears in official first-registration
     data for the selected calendar year. Returns verified/blocked/unavailable."""
@@ -1696,15 +1737,25 @@ with tabs[0]:
 
     if taxonomy_verified:
         spec_rows,_,tax_engines,_,_=taxonomy_options(taxonomy,spec=selected_spec,fuel=selected_fuel)
-        engine_options=_merge_unique(tax_engines,engines)
+        candidate_engines=_merge_unique(tax_engines,engines)
     else:
         spec_rows=[]
-        # With no verified taxonomy, narrow live-advert engines by selected fuel where possible.
         live_fuel_rows=[c for c in selector_rows if (not selected_fuel or extract_fuel(c).lower()==selected_fuel.lower())]
         live_engines,_,_,_=build_vehicle_choices(live_fuel_rows)
-        # A thin advert sample must never erase valid model engines from the fallback catalogue.
-        # Merge both sources, preserving live choices first and adding any missing known engines.
-        engine_options=_merge_unique(live_engines,engines)
+        candidate_engines=_merge_unique(live_engines,engines)
+
+    # IMPOSSIBLE-WRONG-ENGINE selector:
+    # once make/model/year/fuel are known, remove engines not evidenced in that year's
+    # official UK registrations instead of allowing a bad choice then rejecting it.
+    official_year_engines=official_year_engine_options(
+        official_catalogue,selected_make,selected_model,selected_year,selected_fuel
+    )
+    engine_options=filter_engines_to_official_year(candidate_engines,official_year_engines)
+    engine_is_year_constrained=bool(official_year_engines)
+    if engine_is_year_constrained:
+        st.caption(f"Engine list filtered to {selected_year} UK registrations — {len(engine_options)} valid choice(s).")
+    elif selected_model:
+        st.caption("No year-specific official engine evidence available; DG fallback choices are shown and will be checked before valuation.")
 
     selected_engine=st.selectbox("Engine / powertrain",["— Choose engine —"]+engine_options,
         disabled=not bool(selected_model))
@@ -1730,7 +1781,7 @@ with tabs[0]:
         elif combo_check["status"]=="blocked":
             st.error("YEAR / ENGINE MISMATCH — "+combo_check["reason"]+" Change the selection before valuation.")
         else:
-            st.warning("YEAR / ENGINE NOT VERIFIED — "+combo_check["reason"]+" DG will not return an automatic valuation until this is verified.")
+            st.warning("YEAR / ENGINE CHECK LIMITED — "+combo_check["reason"]+" DG will use the available catalogue and market evidence; verify unusual/imported cars manually.")
 
     with st.expander("Exact engine not listed?"):
         manual_engine=st.text_input("Engine override",placeholder="e.g. 2.0L")
@@ -2005,12 +2056,13 @@ with tabs[0]:
             official_catalogue,selected_make,selected_model,selected_year,
             selected_fuel,selected_spec,selected_engine
         ) if selected_make and selected_model and selected_engine else {"status":"unavailable","reason":"Make, model and engine must be selected."}
-        valuation_blocked=combo_check.get("status")!="verified"
+        valuation_blocked=combo_check.get("status")=="blocked"
         if valuation_blocked:
             st.session_state["current_appraisal_ready"]=False
             st.session_state["current_appraisal_record"]=None
-            st.error("VALUATION STOPPED — "+combo_check.get("reason","Vehicle configuration could not be verified.")+" Choose a verified year/engine combination before DG calculates a value.")
-            st.stop()
+            st.error("VALUATION STOPPED — "+combo_check.get("reason","Vehicle configuration could not be verified.")+" The engine list has been refreshed to valid year-specific choices.")
+        # Do not st.stop(): Streamlit must complete the rerun so the user can immediately
+        # change a selection. A blocked combination simply skips valuation below.
         # Normalize any stale Streamlit state before result rendering.
         market = safe_market_snapshot(st.session_state.get("market_estimate")) if not valuation_blocked else None
         fresh_market=None
