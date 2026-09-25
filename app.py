@@ -260,29 +260,73 @@ COMMON_UK_SPECS={
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def autoza_comparables(make, model, year, limit=50):
-    params=urlencode({
-        "make":make, "model":model,
-        "min_year":max(1990,int(year)-2),
-        "max_year":int(year)+2,
-        "page":1, "limit":min(int(limit),50)
-    })
-    url="https://autoza.co.uk/api/v1/vehicles?"+params
-    req=urllib.request.Request(url,headers={
-        "User-Agent":"Mozilla/5.0 DG-Deal-Finder/1.0",
-        "Accept":"application/json"
-    })
+def autoza_mcp_call(tool_name, arguments):
+    body={"jsonrpc":"2.0","id":"dg1","method":"tools/call",
+          "params":{"name":tool_name,"arguments":arguments}}
+    req=urllib.request.Request(
+        "https://autoza.co.uk/api/mcp",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream",
+                 "User-Agent":"DG-Deal-Finder/1.0"},
+        method="POST")
     with urllib.request.urlopen(req,timeout=25) as r:
-        payload=json.loads(r.read().decode("utf-8"))
-    return payload.get("data",[]) if isinstance(payload,dict) else []
+        raw=r.read().decode("utf-8","ignore")
+    frames=[]
+    if raw.lstrip().startswith("{"): frames=[raw]
+    else: frames=[ln[5:].strip() for ln in raw.splitlines() if ln.startswith("data:")]
+    if not frames: raise RuntimeError("Market service returned no data")
+    envelope=json.loads(frames[-1])
+    if envelope.get("error"): raise RuntimeError(str(envelope["error"]))
+    result=envelope.get("result",{})
+    # MCP tool result may be structuredContent or text JSON.
+    if isinstance(result,dict) and result.get("structuredContent") is not None:
+        return result["structuredContent"]
+    if isinstance(result,dict):
+        for c in result.get("content",[]) or []:
+            if isinstance(c,dict) and c.get("type")=="text":
+                txt=c.get("text","")
+                try: return json.loads(txt)
+                except: return {"text":txt}
+    return result
+
+def _find_list(obj):
+    if isinstance(obj,list) and obj and all(isinstance(x,dict) for x in obj): return obj
+    if isinstance(obj,dict):
+        for k in ("vehicles","cars","listings","results","data","items"):
+            if k in obj:
+                got=_find_list(obj[k])
+                if got: return got
+        for v in obj.values():
+            got=_find_list(v)
+            if got: return got
+    return []
 
 @st.cache_data(ttl=900, show_spinner=False)
-def autoza_market_stats():
-    req=urllib.request.Request(
-        "https://autoza.co.uk/api/public/market-stats",
-        headers={"User-Agent":"Mozilla/5.0 DG-Deal-Finder/1.0","Accept":"application/json"})
-    with urllib.request.urlopen(req,timeout=20) as r:
-        return json.loads(r.read().decode("utf-8"))
+def autoza_comparables(make, model, year, limit=50):
+    payload=autoza_mcp_call("search_used_cars",{
+        "make":make,"model":model,"min_year":max(1990,int(year)-2),
+        "max_year":int(year)+2,"limit":min(int(limit),50)})
+    return _find_list(payload)
+
+@st.cache_data(ttl=900, show_spinner=False)
+def autoza_price_guide(make, model):
+    return autoza_mcp_call("get_uk_price_guide",{"make":make,"model":model})
+
+def _walk_numbers(obj, names):
+    wanted={x.lower() for x in names}
+    if isinstance(obj,dict):
+        for k,v in obj.items():
+            if str(k).lower() in wanted:
+                try: return float(re.sub(r"[^0-9.]","",str(v)))
+                except: pass
+        for v in obj.values():
+            z=_walk_numbers(v,names)
+            if z is not None:return z
+    elif isinstance(obj,list):
+        for v in obj:
+            z=_walk_numbers(v,names)
+            if z is not None:return z
+    return None
 
 def _num(d,*keys):
     if not isinstance(d,dict): return None
@@ -335,6 +379,15 @@ def analyse_risk(year,mileage,make,model,notes=""):
     return level,reasons
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def free_mot_outlook(make, model, year, mileage):
+    return autoza_mcp_call("mot_outlook",{
+        "make":make,"model":model,"year":int(year),"mileage":int(mileage)})
+
+@st.cache_data(ttl=900, show_spinner=False)
+def free_model_reliability(make, model):
+    return autoza_mcp_call("get_model_reliability",{"make":make,"model":model})
+
 @st.cache_data(ttl=3300, show_spinner=False)
 def dvsa_token(client_id, client_secret, token_url, scope):
     body=urlencode({"grant_type":"client_credentials","client_id":client_id,
@@ -351,7 +404,8 @@ def dvsa_mot_lookup(reg):
     if missing: return {"configured":False,"missing":missing}
     token=dvsa_token(cfg["DVSA_CLIENT_ID"],cfg["DVSA_CLIENT_SECRET"],cfg["DVSA_TOKEN_URL"],cfg["DVSA_SCOPE"])
     vrm=re.sub(r"[^A-Za-z0-9]","",reg).upper()
-    url="https://history.mot.api.gov.uk/v1/trade/vehicles/registration/"+quote(vrm)
+    base=str(cfg.get("DVSA_API_BASE","https://history.mot.api.gov.uk")).rstrip("/")
+    url=base+"/v1/trade/vehicles/registration/"+quote(vrm)
     req=urllib.request.Request(url,headers={"Authorization":"Bearer "+token,"X-API-Key":cfg["DVSA_API_KEY"],"Accept":"application/json"})
     with urllib.request.urlopen(req,timeout=20) as r:
         data=json.loads(r.read().decode())
@@ -614,8 +668,18 @@ with tabs[0]:
         if st.button("GET LIVE MARKET ESTIMATE",use_container_width=True,type="primary"):
             try:
                 with st.spinner("Checking similar UK dealer adverts…"):
-                    comps=autoza_comparables(selected_make,selected_model,selected_year,25)
+                    comps=autoza_comparables(selected_make,selected_model,selected_year,50)
                     market=estimate_market_from_comps(comps,selected_year,cat_mileage)
+                    if market:
+                        market["source"]="10 closest live dealer adverts"
+                    else:
+                        guide=autoza_price_guide(selected_make,selected_model)
+                        typical=_walk_numbers(guide,["typical","typical_price","median","average","average_price"])
+                        low=_walk_numbers(guide,["lowest","low","minimum","min_price"])
+                        high=_walk_numbers(guide,["highest","high","maximum","max_price"])
+                        if typical:
+                            market={"retail":typical,"low":low or typical,"high":high or typical,
+                                    "count":0,"rows":[],"source":"Autoza UK price guide"}
                 if market:
                     st.session_state["market_estimate"]=market
                     st.session_state["market_retail"]=int(round(market["retail"]/50)*50)
@@ -636,50 +700,79 @@ with tabs[0]:
         c1.metric("Est. retail",f'£{st.session_state.get("market_retail",0):,.0f}')
         c2.metric("Comparable low",f'£{market["low"]:,.0f}')
         c3.metric("Comparable high",f'£{market["high"]:,.0f}')
-        st.caption(f'Based on {market["count"]} closest live dealer asking prices. Asking price is not the same as achieved sale price.')
-        with st.expander("Similar cars currently advertised"):
-            for i,car in enumerate(market["rows"][:10],1):
-                title=f'{i}. {car.get("year","")} {car.get("make","")} {car.get("model","")}'
-                detail=f'£{float(car.get("price",0)):,.0f} · {int(car.get("mileage") or 0):,} miles'
-                url=car.get("url")
-                if url:
-                    st.markdown(f'**{title}** — {detail}  \n[View advert]({url})')
-                else:
-                    st.write(f'{title} — {detail}')
+        st.caption(f'{market.get("source","Live UK market data")}. Asking price is not the same as achieved sale price.')
+        with st.expander(f'Similar cars currently advertised ({len(market.get("rows",[]))})'):
+            if not market.get("rows"):
+                st.info("The market service returned price guidance but no individual comparable adverts for this search.")
+            for i,car in enumerate(market.get("rows",[])[:10],1):
+                price=_num(car,"price","asking_price","askingPrice") or 0
+                miles=_num(car,"mileage","miles","odometer") or 0
+                yr=int(_num(car,"year","registration_year","registrationYear") or 0)
+                title_txt=_pick(car,"title","vehicle","name","derivative","description")
+                if not title_txt:
+                    title_txt=f'{yr or ""} {_pick(car,"make") or selected_make} {_pick(car,"model") or selected_model}'.strip()
+                dealer=_pick(car,"dealer","dealer_name","seller","advertiser","location")
+                url=_pick(car,"url","advert_url","advertUrl","link")
+                detail=f'£{price:,.0f} · {int(miles):,} miles'
+                if dealer: detail+=f' · {dealer}'
+                st.markdown(f'**{i}. {title_txt}** — {detail}')
+                if url: st.markdown(f'[View advert]({url})')
 
-    st.markdown('<div class="section">MOT intelligence</div>',unsafe_allow_html=True)
+    st.markdown('<div class="section">MOT & reliability intelligence</div>',unsafe_allow_html=True)
+    # Free/no-key model-level MOT outlook works immediately.
+    if selected_make and selected_model and cat_mileage:
+        if st.button("ANALYSE MOT / RELIABILITY",use_container_width=True):
+            try:
+                with st.spinner("Analysing DVSA-derived reliability data…"):
+                    st.session_state["free_mot"]=free_mot_outlook(selected_make,selected_model,selected_year,cat_mileage)
+                    st.session_state["reliability"]=free_model_reliability(selected_make,selected_model)
+            except Exception as e:
+                st.error("Reliability service did not return usable data.")
+                with st.expander("Technical detail"): st.code(str(e))
+        fm=st.session_state.get("free_mot")
+        rel=st.session_state.get("reliability")
+        if fm:
+            st.markdown("**MOT outlook**")
+            st.write(fm.get("text") if isinstance(fm,dict) and fm.get("text") else fm)
+        if rel:
+            st.markdown("**Model reliability**")
+            st.write(rel.get("text") if isinstance(rel,dict) and rel.get("text") else rel)
+
+    # Exact registration history uses the official DVSA API when the user's credentials exist.
     reg_for_mot=st.session_state.get("imp_reg","")
     if reg_for_mot:
-        if st.button("CHECK MOT HISTORY",use_container_width=True):
-            try:
-                with st.spinner("Checking official MOT history…"):
-                    st.session_state["mot_lookup"]=dvsa_mot_lookup(reg_for_mot)
-            except Exception as e:
-                st.error("MOT lookup failed.")
-                with st.expander("Technical detail"): st.code(str(e))
-        mot=st.session_state.get("mot_lookup")
-        if mot and not mot.get("configured"):
-            st.info("MOT panel is ready. Add the free DVSA MOT API credentials in Streamlit Secrets to switch it on.")
-        elif mot and mot.get("data"):
-            ms=mot_risk_summary(mot["data"])
-            latest=ms["latest"]
-            x1,x2,x3=st.columns(3)
-            x1.metric("Latest MOT",str(latest.get("testResult","—")).title())
-            x2.metric("MOT mileage",f'{int(latest.get("odometerValue") or 0):,}' if str(latest.get("odometerValue","")).isdigit() else "—")
-            x3.metric("Expiry",str(latest.get("expiryDate","—")))
-            flags=[]
-            if ms["fails"]: flags.append(f'{ms["fails"]} historic failure(s)')
-            if ms["mileage_warning"]: flags.append("Mileage decreased between recorded tests")
-            repeated=[f"{k} ×{v}" for k,v in ms["recurring"].items() if v>=2]
-            if repeated: flags.append("Recurring: "+", ".join(repeated))
-            if flags: st.warning(" · ".join(flags))
-            with st.expander("Full MOT history"):
-                for t in ms["tests"]:
-                    st.markdown(f'**{str(t.get("completedDate",""))[:10]} — {t.get("testResult","")} — {t.get("odometerValue","—")} {t.get("odometerUnit","")}**')
-                    for d in t.get("defects",[]) or []:
-                        st.write(f'• {d.get("type","")}: {d.get("text","")}')
+        mot_configured=all(st.secrets.get(k) for k in ["DVSA_CLIENT_ID","DVSA_CLIENT_SECRET","DVSA_TOKEN_URL","DVSA_SCOPE","DVSA_API_KEY"])
+        if mot_configured:
+            if st.button("CHECK EXACT MOT HISTORY",use_container_width=True):
+                try:
+                    with st.spinner("Checking official DVSA MOT history…"):
+                        st.session_state["mot_lookup"]=dvsa_mot_lookup(reg_for_mot)
+                except Exception as e:
+                    st.error("Official MOT lookup failed.")
+                    with st.expander("Technical detail"): st.code(str(e))
+            mot=st.session_state.get("mot_lookup")
+            if mot and mot.get("data"):
+                ms=mot_risk_summary(mot["data"])
+                latest=ms["latest"]
+                x1,x2,x3=st.columns(3)
+                x1.metric("Latest MOT",str(latest.get("testResult","—")).title())
+                try: motm=f'{int(latest.get("odometerValue") or 0):,}'
+                except: motm="—"
+                x2.metric("MOT mileage",motm); x3.metric("Expiry",str(latest.get("expiryDate","—")))
+                flags=[]
+                if ms["fails"]: flags.append(f'{ms["fails"]} historic failure(s)')
+                if ms["mileage_warning"]: flags.append("Mileage decreased between recorded tests")
+                repeated=[f"{k} ×{v}" for k,v in ms["recurring"].items() if v>=2]
+                if repeated: flags.append("Recurring: "+", ".join(repeated))
+                if flags: st.warning(" · ".join(flags))
+                with st.expander("Full MOT history"):
+                    for t in ms["tests"]:
+                        st.markdown(f'**{str(t.get("completedDate",""))[:10]} — {t.get("testResult","")} — {t.get("odometerValue","—")} {t.get("odometerUnit","")}**')
+                        for d in t.get("defects",[]) or []: st.write(f'• {d.get("type","")}: {d.get("text","")}')
+        else:
+            st.caption("Exact registration MOT history needs your free DVSA API credentials. Model-level MOT/reliability analysis above works without them.")
     else:
-        st.caption("Enter the registration above to enable MOT history.")
+        st.caption("Add the registration for exact MOT history once DVSA credentials are connected.")
 
     with st.expander("DG buying checklist"):
         st.markdown("""
