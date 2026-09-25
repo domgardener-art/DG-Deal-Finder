@@ -372,6 +372,15 @@ div[data-testid="stMetricValue"]{font-size:1.34rem!important;letter-spacing:-.02
  [data-baseweb="select"]>div,input{min-height:54px!important;font-size:16px!important}
  div[data-testid="stMetric"]{padding:13px!important}
 }
+
+.market-note{border-radius:14px;padding:14px 16px;margin:10px 0 14px;border:1px solid #D5DEE8;background:#FFFFFF;color:#12233D;box-shadow:0 2px 7px rgba(20,40,65,.05)}
+.market-note strong{display:block;font-size:.92rem;margin-bottom:3px;color:#0B1736}
+.market-note.low{background:#FFF7E6;border-color:#E8B94F;color:#5B4210}
+.market-note.low strong{color:#5B4210}
+.market-note.good{background:#EAF7EF;border-color:#7CC596;color:#164B2A}
+.market-note.good strong{color:#164B2A}
+.market-note.bad{background:#FDECEC;border-color:#E39A9A;color:#742525}
+.market-note.bad strong{color:#742525}
 </style>
 """, unsafe_allow_html=True)
 
@@ -667,6 +676,18 @@ DG_POWERTRAIN_CATALOG = {
         "gearboxes":["Manual","Automatic"],
         "specs":["SE","Sport","AMG Line","AMG Line Premium","AMG Line Premium Plus","A35 AMG","A45 AMG"]
     },
+    ("Dacia","Sandero"): {
+        "engines":["0.9L","1.0L","1.2L","1.5L"],
+        "fuels":["Petrol","Diesel","LPG"],
+        "gearboxes":["Manual","Automatic"],
+        "specs":["Access","Essential","Comfort","Expression","Journey"]
+    },
+    ("Dacia","Sandero Stepway"): {
+        "engines":["0.9L","1.0L","1.5L"],
+        "fuels":["Petrol","Diesel","LPG"],
+        "gearboxes":["Manual","Automatic"],
+        "specs":["Essential","Comfort","Prestige","Expression","Extreme"]
+    },
 }
 
 def _merge_unique(*groups):
@@ -679,11 +700,17 @@ def _merge_unique(*groups):
                 seen.add(x.lower()); out.append(x)
     return out
 
-def local_vehicle_choices(make,model):
+def local_vehicle_choices(make,model,year=None):
     d=DG_POWERTRAIN_CATALOG.get((make,model),{})
-    # Do not depend on a separate trim variable: the fallback catalogue is self-contained.
-    # This avoids a NameError if the legacy trim-hint constant changes name.
     specs=_merge_unique(d.get("specs",[]))
+    try: y=int(year) if year is not None else None
+    except (TypeError,ValueError): y=None
+    # Current Dacia UK ranges are known; older names are retained only as suggestions
+    # because the free market feed is not an authoritative historical taxonomy.
+    if make=="Dacia" and model=="Sandero" and y and y>=2025:
+        specs=["Essential","Expression","Journey"]
+    elif make=="Dacia" and model=="Sandero Stepway" and y and y>=2025:
+        specs=["Essential","Expression","Extreme"]
     return list(d.get("engines",[])),list(d.get("fuels",[])),list(d.get("gearboxes",[])),specs
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -754,7 +781,7 @@ def robust_vehicle_choices(make,model,year,rows):
     except Exception: pass
     try: cx=carsxe_choices(make,model,year)
     except Exception: pass
-    local=local_vehicle_choices(make,model)
+    local=local_vehicle_choices(make,model,year)
     merged=tuple(_merge_unique(a[i],mc[i],cx[i],local[i]) for i in range(4))
     sources=[]
     if any(a): sources.append("live adverts")
@@ -765,22 +792,43 @@ def robust_vehicle_choices(make,model,year,rows):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def autoza_comparables(make, model, year, limit=50):
-    params={"make":str(make).strip(),"model":str(model).strip(),
-            "min_year":max(1990,int(year)-2),"max_year":int(year)+2,
-            "page":1,"limit":min(max(int(limit),1),50)}
-    url="https://autoza.co.uk/api/v1/vehicles?"+urlencode(params)
-    req=Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
-    with urlopen(req,timeout=20) as response:
-        payload=json.loads(response.read().decode("utf-8"))
-    if isinstance(payload,list): return payload
-    if isinstance(payload,dict):
-        for key in ("vehicles","results","data","items"):
-            value=payload.get(key)
-            if isinstance(value,list): return value
-            if isinstance(value,dict):
-                for sub in ("vehicles","results","items"):
-                    if isinstance(value.get(sub),list): return value[sub]
-    return []
+    """Fetch several result pages so DG does not mistake page one for the whole market."""
+    wanted=max(1,min(int(limit or 50),150))
+    rows=[]
+    seen=set()
+    per_page=50
+    for page in range(1,4):
+        params={"make":str(make).strip(),"model":str(model).strip(),
+                "min_year":max(1990,int(year)-3),"max_year":int(year)+3,
+                "page":page,"limit":per_page}
+        url="https://autoza.co.uk/api/v1/vehicles?"+urlencode(params)
+        req=Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
+        with urlopen(req,timeout=20) as response:
+            payload=json.loads(response.read().decode("utf-8"))
+        batch=[]
+        if isinstance(payload,list):
+            batch=payload
+        elif isinstance(payload,dict):
+            for key in ("vehicles","results","data","items"):
+                value=payload.get(key)
+                if isinstance(value,list):
+                    batch=value; break
+                if isinstance(value,dict):
+                    for sub in ("vehicles","results","items"):
+                        if isinstance(value.get(sub),list):
+                            batch=value[sub]; break
+                    if batch: break
+        if not batch: break
+        for car in batch:
+            if not isinstance(car,dict): continue
+            ident=str(_pick(car,"id","vehicle_id","stock_id","url","advert_url","link") or "")
+            if not ident:
+                ident="|".join(str(_pick(car,k) or "") for k in ("registration","title","price","mileage","year"))
+            if ident in seen: continue
+            seen.add(ident); rows.append(car)
+            if len(rows)>=wanted: return rows
+        if len(batch)<per_page: break
+    return rows
 
 def _num(d,*keys):
     if not isinstance(d,dict): return None
@@ -880,6 +928,40 @@ def matches_vehicle_choices(car,engine="",fuel="",gearbox="",spec=""):
         # derivative match is deliberately tolerant: require the meaningful spec tokens to appear.
         if words and sum(w in txt for w in words) < max(1,min(3,len(words))): return False
     return True
+
+def build_comparable_cohort(rows, engine="", fuel="", gearbox="", spec="", max_rows=30):
+    """Use exact matches first, then progressively relaxed supporting comps.
+    Fuel is retained longest; this avoids a one-advert valuation when the wider
+    same-model market has useful evidence, without pretending all comps are exact."""
+    rows=[r for r in (rows or []) if isinstance(r,dict)]
+    tiers=[
+        ("Exact", lambda c: matches_vehicle_choices(c,engine,fuel,gearbox,spec)),
+        ("Same engine/fuel/gearbox", lambda c: matches_vehicle_choices(c,engine,fuel,gearbox,"")),
+        ("Same engine/fuel", lambda c: matches_vehicle_choices(c,engine,fuel,"","")),
+        ("Same fuel/gearbox", lambda c: matches_vehicle_choices(c,"",fuel,gearbox,"")),
+        ("Same fuel", lambda c: matches_vehicle_choices(c,"",fuel,"","")),
+        ("Same model", lambda c: True),
+    ]
+    chosen=[]; seen=set(); counts={}
+    for label,test in tiers:
+        added=0
+        for car in rows:
+            try:
+                ok=test(car)
+            except Exception:
+                ok=False
+            if not ok: continue
+            ident=str(_pick(car,"id","vehicle_id","stock_id","url","advert_url","link") or "")
+            if not ident:
+                ident="|".join(str(_pick(car,k) or "") for k in ("registration","title","price","mileage","year"))
+            if ident in seen: continue
+            seen.add(ident)
+            tagged=dict(car); tagged["_dg_match_tier"]=label
+            chosen.append(tagged); added+=1
+            if len(chosen)>=max_rows: break
+        counts[label]=added
+        if len(chosen)>=max_rows: break
+    return chosen,counts
 
 def comparable_vehicle_label(car, fallback_make="", fallback_model=""):
     """Build a vehicle label without ever using dealer/seller/business names as the car title."""
@@ -1252,9 +1334,12 @@ with tabs[0]:
 
     selected_spec=st.selectbox("Spec / derivative",["— Choose spec —"]+spec_options,
         disabled=not bool(selected_model),
-        help="Fuel is selected first, then DG restricts derivative and engine choices to the selected year where verified compatibility data is available.")
+        help="DG combines structured taxonomy when available, clean live-advert trim fields and built-in UK model trim suggestions. Suggestions are not presented as authoritative historical derivative data.")
     if selected_spec.startswith("—"): selected_spec=""
-    st.caption("Fuel → spec → engine → gearbox. Verified taxonomy choices are restricted to the exact selected year.")
+    if taxonomy_verified:
+        st.caption("Fuel → spec → engine → gearbox. Verified taxonomy choices are restricted to the exact selected year.")
+    else:
+        st.caption("Fuel → spec → engine → gearbox. Where the free feed has no structured spec, DG supplies clean model trim suggestions instead of dealer names; use the manual override if the exact historical trim is missing.")
 
     with st.expander("Exact spec not listed?"):
         manual_spec=st.text_input("Spec override",placeholder="e.g. vRS")
@@ -1377,10 +1462,10 @@ with tabs[0]:
         a,b=st.columns(2); mileage=a.number_input("Mileage",0,300000,int(st.session_state.get("imp_mileage",0)),1000); asking=b.number_input("Seller asking (£)",0,100000,int(st.session_state.get("imp_asking",0)),50)
         a,b=st.columns(2); retail=a.number_input("Retail estimate override (£)",0,150000,0,50,help="Optional. Leave at £0 to use the fresh live-market estimate when you tap ANALYSE DEAL."); prep=b.number_input("Prep budget (£)",0,20000,400,50)
         a,b=st.columns(2); fees=a.number_input("Other buying costs (£)",0,10000,250,25); risk="Medium"
-        target_margin=st.number_input("Desired contribution / margin (£)",0,20000,int(st.session_state.min_profit),50,help="Your target gross contribution before fixed overhead and tax.")
+        target_margin=st.number_input("Desired contribution / margin (£)",0,20000,500,50,help="Defaults to £500 for a new appraisal. Change it whenever the deal needs a different target.")
         c1,c2=st.columns(2)
-        service_history=c1.selectbox("Service history",["Unknown","Full","Part","None"])
-        keys=c2.selectbox("Keys",["Unknown","2+ keys","1 key"])
+        service_history=c1.selectbox("Service history",["Full","Part","None","Unknown"])
+        keys=c2.selectbox("Keys",["2+ keys","1 key","Unknown"])
         c1,c2=st.columns(2)
         provenance=c1.selectbox("Finance / theft check",["Not checked","Clear","Issue found"])
         v5c=c2.selectbox("V5C",["Not checked","Present & matches","Missing / mismatch"])
@@ -1392,6 +1477,21 @@ with tabs[0]:
         category_guidance={"Clear / none known":"No known insurance write-off marker entered.","Cat N":"Non-structural damage under the current UK system. Repair quality and provenance still need checking.","Cat S":"Structural damage under the current UK system. Inspect structural repair quality and evidence carefully.","Cat D (legacy)":"Older repairable category. Verify repair quality and provenance; the percentage is an appraisal assumption, not a universal discount.","Cat C (legacy)":"Older repairable category. Repair costs exceeded pre-accident value under the former system; verify repairs and provenance carefully.","Cat B":"Break for parts: the bodyshell must not return to the road. Do not appraise as a normal retail road car.","Cat A":"Scrap only: the complete vehicle must be crushed. Do not appraise as a retail road car.","Other / unsure":"Category unclear. Verify provenance before relying on the valuation."}
         if insurance_category in ("Cat A","Cat B"): st.error(category_guidance[insurance_category])
         else: st.caption(category_guidance[insurance_category])
+
+        modification_level=st.selectbox(
+            "Vehicle modifications",
+            ["Standard / not modified","Light modifications","Significant modifications","Heavily modified / track-style"],
+            help="Defaults to standard. Modification values are DG appraisal assumptions because aftermarket changes can narrow the buyer pool and their value is highly vehicle-specific."
+        )
+        modification_default={"Standard / not modified":0,"Light modifications":-3,"Significant modifications":-7,"Heavily modified / track-style":-12}[modification_level]
+        modification_pct=st.number_input(
+            "Modification retail adjustment (%)",-25,15,modification_default,1,
+            help="Editable. Negative reduces expected retail; positive can be used only where you have evidence that a desirable modification genuinely adds retail value."
+        )
+        modification_notes=st.text_input(
+            "Modification details",placeholder="e.g. remap, exhaust, suspension, wheels — leave blank if standard",
+            disabled=modification_level=="Standard / not modified"
+        )
         condition_grade=st.selectbox(
             "Condition grade",
             [1,2,3,4,5],
@@ -1488,6 +1588,15 @@ with tabs[0]:
         elif insurance_category=="Other / unsure":
             if risk=="Low": risk="Medium"
             risk_reasons.append("Insurance category needs verification")
+        if modification_level=="Light modifications":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Modified vehicle — verify modification quality, insurance implications and buyer demand")
+        elif modification_level=="Significant modifications":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Significant modifications — narrower buyer pool and additional mechanical/insurance checks required")
+        elif modification_level=="Heavily modified / track-style":
+            risk="High"
+            risk_reasons.append("Heavily modified vehicle — retail demand, mechanical use and insurability require extra caution")
         st.markdown(f"**DG risk analysis: {risk}**")
         st.caption(" · ".join(risk_reasons))
         if st.session_state.get("scan_year") or st.session_state.get("scan_fuel") or st.session_state.get("scan_gearbox"):
@@ -1517,19 +1626,21 @@ with tabs[0]:
         if selected_make and selected_model:
             try:
                 with st.spinner("Checking live market and analysing deal…"):
-                    comps=autoza_comparables(selected_make,selected_model,selected_year,50)
+                    comps=autoza_comparables(selected_make,selected_model,selected_year,150)
                     if not comps:
                         simple_model=re.sub(r"[^A-Za-z0-9 ]+"," ",selected_model).strip()
                         if simple_model and simple_model.lower()!=selected_model.lower():
-                            comps=autoza_comparables(selected_make,simple_model,selected_year,50)
-                    filtered=[c for c in comps if matches_vehicle_choices(c,selected_engine,selected_fuel,selected_gearbox,selected_spec)]
-                    if not filtered and selected_spec:
-                        filtered=[c for c in comps if matches_vehicle_choices(c,selected_engine,selected_fuel,selected_gearbox,"")]
-                    fresh_market=estimate_market_from_comps(filtered or comps,selected_year,mileage)
+                            comps=autoza_comparables(selected_make,simple_model,selected_year,150)
+                    exact=[c for c in comps if matches_vehicle_choices(c,selected_engine,selected_fuel,selected_gearbox,selected_spec)]
+                    cohort,tier_counts=build_comparable_cohort(
+                        comps,selected_engine,selected_fuel,selected_gearbox,selected_spec,30)
+                    fresh_market=estimate_market_from_comps(cohort or comps,selected_year,mileage)
                     if fresh_market:
-                        fresh_market["selector_match_count"]=len(filtered)
+                        fresh_market["selector_match_count"]=len(exact)
+                        fresh_market["source_count"]=len(comps)
+                        fresh_market["tier_counts"]=tier_counts
                         fresh_market["engine"]=selected_engine; fresh_market["fuel"]=selected_fuel; fresh_market["gearbox"]=selected_gearbox; fresh_market["spec"]=selected_spec
-                        fresh_market["source"]=f'Average of {fresh_market["count"]} closest current for-sale listings'
+                        fresh_market["source"]=f'Closest current asking-price evidence from {len(comps)} source advert(s)'
                         st.session_state["market_estimate"]=fresh_market
                         st.session_state["market_retail"]=int(round(fresh_market["retail"]/50)*50)
             except Exception:
@@ -1585,9 +1696,11 @@ with tabs[0]:
         # Turn the raw live-market average into a recommendation for THIS car.
         market_average=float(appraisal_retail)
         category_adjustment=-(market_average*(category_discount/100.0))
+        modification_adjustment=market_average*(float(modification_pct)/100.0)
         recommended_retail=max(0,
             market_average
             + category_adjustment
+            + modification_adjustment
             + grade_adjustment
             + service_adjustment
             + keys_adjustment
@@ -1641,6 +1754,8 @@ with tabs[0]:
         st.write(f"Condition grade {condition_grade}: **£{grade_adjustment:+,.0f}**")
         st.write(f"Service history ({service_history}): **£{service_adjustment:+,.0f}**")
         st.write(f"Keys ({keys}): **£{keys_adjustment:+,.0f}**")
+        st.write(f"Modifications ({modification_level}): **£{modification_adjustment:+,.0f}** ({modification_pct:+.0f}%)")
+        if modification_notes.strip(): st.caption("Modification notes: "+modification_notes.strip())
         st.write(f"MOT time remaining: **£{mot_time_adj:+,.0f}**")
         if manual_retail_adjustment:
             st.write(f"Other retail adjustment: **£{manual_retail_adjustment:+,.0f}**")
@@ -1716,21 +1831,19 @@ with tabs[0]:
 
         st.markdown('<div class="section">Market evidence</div>',unsafe_allow_html=True)
         comparable_count=int(result_market.get("count",0) or 0)
+        exact_count=int(result_market.get("selector_match_count",0) or 0)
+        source_count=int(result_market.get("source_count",comparable_count) or comparable_count)
         if comparable_count==0:
-            st.error("No close live comparables found. DG cannot give the live valuation normal confidence.")
-        elif comparable_count==1:
-            st.warning("Low market confidence · 1 close comparable. Treat retail as provisional.")
+            st.markdown('<div class="market-note bad"><strong>No usable market sample</strong>No close current adverts were suitable enough for the valuation.</div>',unsafe_allow_html=True)
+        elif exact_count<=1:
+            st.markdown(f'<div class="market-note low"><strong>Limited exact-match evidence</strong>{exact_count} exact match(es), but DG found {source_count} same-model source advert(s) and used the closest {comparable_count} as supporting market evidence.</div>',unsafe_allow_html=True)
         elif comparable_count<5:
-            st.warning(f"Limited market evidence · {comparable_count} close comparables. Useful as a guide, but not a strong sample.")
+            st.markdown(f'<div class="market-note low"><strong>Limited market sample</strong>{exact_count} exact match(es) · {comparable_count} comparable advert(s) used.</div>',unsafe_allow_html=True)
         else:
-            st.success(f"Market evidence · {comparable_count} close comparables.")
+            st.markdown(f'<div class="market-note good"><strong>Useful current market sample</strong>{exact_count} exact match(es) · {comparable_count} closest comparable advert(s) used from {source_count} source advert(s).</div>',unsafe_allow_html=True)
         if comparable_count:
-            low=float(result_market.get("low",0) or 0)
-            high=float(result_market.get("high",0) or 0)
-            if comparable_count==1:
-                st.write(f"Current comparable asking price: **£{low:,.0f}**")
-            else:
-                st.write(f"Observed asking range: **£{low:,.0f}–£{high:,.0f}**")
+            low=float(result_market.get("low",0) or 0); high=float(result_market.get("high",0) or 0)
+            st.write(f"Observed asking range: **£{low:,.0f}–£{high:,.0f}**" if comparable_count>1 else f"Current comparable asking price: **£{low:,.0f}**")
             rows=result_market.get("rows",[])
             if rows:
                 with st.expander(f"View the {min(len(rows),10)} comparable advert(s) used"):
@@ -1739,13 +1852,35 @@ with tabs[0]:
                         miles=_num(car,"mileage","miles","odometer") or 0
                         yr=int(_num(car,"year","registration_year","registrationYear") or 0)
                         title_txt=comparable_vehicle_label(car,selected_make,selected_model)
+                        tier=str(car.get("_dg_match_tier","Comparable"))
                         st.markdown(f"**{i}. {yr or 'Year n/a'} {title_txt}**")
-                        st.caption(f"Asking £{price:,.0f}" + (f" · {int(miles):,} miles" if miles else ""))
-        st.caption("Current asking-price evidence only. Asking prices are not achieved sale prices; historical trends only appear once real observations have been saved.")
+                        st.caption(f"{tier} · Asking £{price:,.0f}" + (f" · {int(miles):,} miles" if miles else ""))
+        st.caption("DG prioritises exact matches, then progressively uses the closest same-model evidence when the exact derivative market is thin. Asking prices are not achieved sale prices.")
 
-        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}])
-        if DATA.exists(): row=pd.concat([pd.read_csv(DATA),row],ignore_index=True)
-        row.to_csv(DATA,index=False)
+        appraisal_record={"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
+        st.session_state["current_appraisal_record"]=appraisal_record
+
+        st.markdown('<div class="section">Finish appraisal</div>',unsafe_allow_html=True)
+        save_col,new_col=st.columns(2)
+        if save_col.button("SAVE APPRAISAL",use_container_width=True,type="primary"):
+            saved=pd.DataFrame([dict(st.session_state["current_appraisal_record"])])
+            # Timestamp at the moment of saving so the Deals tab shows when it was actually saved.
+            saved.loc[0,"date"]=datetime.now().strftime("%Y-%m-%d %H:%M")
+            if DATA.exists():
+                try:
+                    existing=pd.read_csv(DATA)
+                    saved=pd.concat([existing,saved],ignore_index=True)
+                except Exception:
+                    pass
+            saved.to_csv(DATA,index=False)
+            st.success("Appraisal saved. Open DEALS to view it later.")
+        if new_col.button("APPRAISE NEW VEHICLE",use_container_width=True):
+            for key in ("imp_reg","imp_vehicle","imp_mileage","imp_asking","imp_desc","source_advert_text",
+                        "market_estimate","market_retail","current_appraisal_record",
+                        "selected_make","selected_model","selected_year","selected_engine",
+                        "selected_fuel","selected_gearbox","selected_spec"):
+                st.session_state.pop(key,None)
+            st.rerun()
     st.markdown('</div>',unsafe_allow_html=True)
 
 with tabs[1]:
@@ -1764,11 +1899,17 @@ with tabs[1]:
 with tabs[2]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Opportunity list</div><div class="hero">Saved deals</div><div class="sub">Keep your strongest sourcing opportunities in one place.</div></div>',unsafe_allow_html=True)
     if DATA.exists():
-        df=pd.read_csv(DATA).sort_values(["score","potential_contribution"],ascending=False)
+        df=pd.read_csv(DATA)
+        if "date" in df.columns: df=df.sort_values("date",ascending=False)
         for _,r in df.iterrows():
             klass={"BUY":"good","BUY CANDIDATE":"good","RESEARCH":"warn","INVESTIGATE":"warn","PASS":"bad"}.get(str(r.get("verdict")),"warn")
-            st.markdown(f'<div class="card"><div class="car">{r.get("vehicle","Vehicle")}</div><div class="meta">{r.get("registration","")} · {int(r.get("mileage",0)):,} miles</div><span class="chip {klass}">{r.get("verdict","")}</span></div>',unsafe_allow_html=True)
-            a,b,c=st.columns(3); a.metric("Ask",f"£{r.get('asking',0):,.0f}"); b.metric("Margin",f"£{r.get('potential_contribution',0):,.0f}"); c.metric("Score",f"{int(r.get('score',0))}")
+            saved_date=str(r.get("date",""))
+            st.markdown(f'<div class="card"><div class="car">{r.get("vehicle","Vehicle")}</div><div class="meta">{r.get("registration","")} · {int(r.get("mileage",0)):,} miles · Saved {saved_date}</div><span class="chip {klass}">{r.get("verdict","")}</span></div>',unsafe_allow_html=True)
+            a,b,c=st.columns(3)
+            a.metric("Ask",f"£{float(r.get('asking',0) or 0):,.0f}")
+            b.metric("Retail",f"£{float(r.get('recommended_retail',r.get('retail_est',0)) or 0):,.0f}")
+            c.metric("Max buy",f"£{float(r.get('max_buy',0) or 0):,.0f}")
+            st.caption(f"Target contribution result: £{float(r.get('potential_contribution',0) or 0):,.0f} · Risk {r.get('risk','')} · Score {int(float(r.get('score',0) or 0))}")
         st.download_button("Export deals",df.to_csv(index=False).encode(),"dg_deals.csv","text/csv",use_container_width=True)
     else: st.info("No saved deals yet.")
     st.markdown('</div>',unsafe_allow_html=True)
