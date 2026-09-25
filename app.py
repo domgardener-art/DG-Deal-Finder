@@ -662,6 +662,66 @@ def _display_make(value):
              "LAND ROVER":"Land Rover","ASTON MARTIN":"Aston Martin","ROLLS-ROYCE":"Rolls-Royce"}
     return aliases.get(raw.upper(),raw.title())
 
+
+# DG verified historical catalogue. Entries are deliberately year-bounded.
+# Source basis for Porsche Cayman:
+# 2007-08 Cayman 2.7; Cayman S 3.4. 2009-12 Cayman 2.9; Cayman S 3.4.
+# 2013-16 981 Cayman 2.7; Cayman S/GTS 3.4; GT4 3.8 (2015-16).
+# 718 four-cylinder 2.0/2.5 begins from 2016 model generation, never backfilled.
+DG_YEAR_RULES=[
+ {"make":"Porsche","model":"Cayman","start":2006,"end":2008,"fuel":"Petrol",
+  "specs":{"Cayman":["2.7L Flat-6"],"Cayman S":["3.4L Flat-6"]}},
+ {"make":"Porsche","model":"Cayman","start":2009,"end":2012,"fuel":"Petrol",
+  "specs":{"Cayman":["2.9L Flat-6"],"Cayman S":["3.4L Flat-6"],"Cayman R":["3.4L Flat-6"]}},
+ {"make":"Porsche","model":"Cayman","start":2013,"end":2014,"fuel":"Petrol",
+  "specs":{"Cayman":["2.7L Flat-6"],"Cayman S":["3.4L Flat-6"]}},
+ {"make":"Porsche","model":"Cayman","start":2015,"end":2016,"fuel":"Petrol",
+  "specs":{"Cayman":["2.7L Flat-6"],"Cayman S":["3.4L Flat-6"],"Cayman GTS":["3.4L Flat-6"],"Cayman GT4":["3.8L Flat-6"]}},
+ {"make":"Porsche","model":"Cayman","start":2017,"end":2018,"fuel":"Petrol",
+  "specs":{"718 Cayman":["2.0L Turbo Flat-4"],"718 Cayman S":["2.5L Turbo Flat-4"],"718 Cayman GTS":["2.5L Turbo Flat-4"]}},
+]
+
+def dg_year_rule(make,model,year,fuel=""):
+    mk=str(make or "").strip().lower(); md=str(model or "").strip().lower()
+    y=int(year or 0)
+    for r in DG_YEAR_RULES:
+        if r["make"].lower()==mk and r["model"].lower()==md and r["start"]<=y<=r["end"]:
+            if fuel and str(r.get("fuel","")).lower()!=str(fuel).lower(): continue
+            return r
+    return None
+
+def dg_year_specs(make,model,year,fuel=""):
+    r=dg_year_rule(make,model,year,fuel)
+    return list(r["specs"].keys()) if r else []
+
+def dg_year_engines(make,model,year,fuel="",spec=""):
+    r=dg_year_rule(make,model,year,fuel)
+    if not r:return []
+    if spec and spec in r["specs"]: return list(r["specs"][spec])
+    vals=[]
+    for engines in r["specs"].values(): vals=_merge_unique(vals,engines)
+    return vals
+
+
+def reliable_year_choices(official_specs,official_engines,dg_specs,dg_engines,tax_specs,tax_engines,taxonomy_verified):
+    """Universal safety gate for all manufacturers.
+    Broad model-level fallback is intentionally excluded."""
+    specs=_merge_unique(official_specs,dg_specs)
+    engines=_merge_unique(official_engines,dg_engines)
+    source=[]
+    if official_specs or official_engines: source.append("DfT year evidence")
+    if dg_specs or dg_engines: source.append("DG verified year rule")
+    if taxonomy_verified:
+        if not specs: specs=_merge_unique(tax_specs)
+        if not engines: engines=_merge_unique(tax_engines)
+        if tax_specs or tax_engines: source.append("exact taxonomy")
+    return specs,engines,source
+
+def catalogue_confidence(specs,engines):
+    if specs and engines:return "verified"
+    if specs or engines:return "partial"
+    return "unverified"
+
 MODEL_ALIASES={
  ("PORSCHE","CAYMAN"):["CAYMAN","718 CAYMAN"],("PORSCHE","718 CAYMAN"):["CAYMAN","718 CAYMAN"],
  ("PORSCHE","BOXSTER"):["BOXSTER","718 BOXSTER"],("PORSCHE","718 BOXSTER"):["BOXSTER","718 BOXSTER"],
@@ -1791,12 +1851,18 @@ with tabs[0]:
     official_year_specs=official_year_spec_options(
         official_catalogue,selected_make,selected_model,selected_year,selected_fuel
     )
-    spec_options=filter_specs_to_official_year(candidate_specs,official_year_specs)
-    spec_is_year_constrained=bool(official_year_specs)
-    if official_catalogue_loaded and not official_year_specs:
-        # The official catalogue loaded successfully but has no year row for this car:
-        # don't leak broad model-level DG specs from other years into a supposedly safe selector.
-        spec_options=_merge_unique(tax_specs if taxonomy_verified else [])
+    verified_dg_specs=dg_year_specs(selected_make,selected_model,selected_year,selected_fuel)
+    year_spec_evidence=_merge_unique(official_year_specs,verified_dg_specs)
+    # Universal reliability rule: model-level fallback specs are never treated as
+    # valid for a selected year. Exact taxonomy is allowed only when year evidence
+    # is otherwise unavailable.
+    safe_specs,_,safe_sources=reliable_year_choices(
+        official_year_specs,[],verified_dg_specs,[],tax_specs if taxonomy_verified else [],
+        [],taxonomy_verified
+    )
+    spec_options=safe_specs
+    spec_is_year_constrained=bool(year_spec_evidence)
+
     if spec_is_year_constrained:
         st.caption(f"Spec list filtered to {selected_year} UK registrations — {len(spec_options)} valid choice(s).")
 
@@ -1831,19 +1897,32 @@ with tabs[0]:
     official_year_engines=official_year_engine_options(
         official_catalogue,selected_make,selected_model,selected_year,selected_fuel,selected_spec
     )
-    engine_options=filter_engines_to_official_year(candidate_engines,official_year_engines)
-    engine_is_year_constrained=bool(official_year_engines)
-    if official_catalogue_loaded and not official_year_engines:
-        # Same safety rule for engines: no broad cross-year fallback when the official
-        # catalogue positively has no engine evidence for this selected year/spec.
-        engine_options=_merge_unique(tax_engines if taxonomy_verified else [])
+    verified_dg_engines=dg_year_engines(
+        selected_make,selected_model,selected_year,selected_fuel,selected_spec
+    )
+    year_engine_evidence=_merge_unique(official_year_engines,verified_dg_engines)
+    _,safe_engines,engine_sources=reliable_year_choices(
+        [],official_year_engines,[],verified_dg_engines,[],
+        tax_engines if taxonomy_verified else [],taxonomy_verified
+    )
+    engine_options=safe_engines
+    engine_is_year_constrained=bool(year_engine_evidence)
+
     if engine_is_year_constrained:
         st.caption(f"Engine list filtered to {selected_year} UK registrations — {len(engine_options)} valid choice(s).")
     elif selected_model:
         st.caption("No year-specific official engine evidence available; DG fallback choices are shown and will be checked before valuation.")
 
+    coverage_status=catalogue_confidence(spec_options,engine_options)
+    if selected_model and coverage_status=="unverified":
+        st.warning(f"NO VERIFIED {selected_year} SPEC/ENGINE DATA — DG has hidden broad fallback choices rather than risk showing an engine from the wrong year.")
+    elif selected_model and coverage_status=="partial":
+        st.warning(f"PARTIAL {selected_year} VEHICLE DATA — only evidenced choices are shown; DG will not invent the missing spec/engine.")
+    elif selected_model:
+        st.success(f"{selected_year} SPEC/ENGINE FILTER ACTIVE — only year-evidenced choices are shown.")
+
     selected_engine=st.selectbox("Engine / powertrain",["— Choose engine —"]+engine_options,
-        disabled=not bool(selected_model))
+        disabled=not bool(selected_model) or not bool(engine_options))
     if selected_engine.startswith("—"): selected_engine=""
 
     if taxonomy_verified:
@@ -1856,10 +1935,14 @@ with tabs[0]:
         disabled=not bool(selected_model))
     if selected_gearbox.startswith("—"): selected_gearbox=""
 
-    combo_check=official_combo_verification(
-        official_catalogue,selected_make,selected_model,selected_year,
-        selected_fuel,selected_spec,selected_engine
-    ) if selected_make and selected_model and selected_engine else {"status":"unavailable","reason":"Choose an engine to verify it against the selected year."}
+    historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
+    if selected_engine and historical_engines:
+        combo_check={"status":"verified","reason":f"Engine/spec is in DG's year-bounded verified catalogue for {selected_year}.","spec_verified":True}
+    else:
+        combo_check=official_combo_verification(
+            official_catalogue,selected_make,selected_model,selected_year,
+            selected_fuel,selected_spec,selected_engine
+        ) if selected_make and selected_model and selected_engine else {"status":"unavailable","reason":"Choose an engine to verify it against the selected year."}
     if selected_engine:
         if combo_check["status"]=="verified":
             st.success("YEAR / ENGINE CHECK ✓  "+combo_check["reason"])
@@ -2133,14 +2216,18 @@ with tabs[0]:
                 with st.expander("Questions to ask the seller"):
                     for question in description_risk["questions"]: st.write("• "+question)
             st.caption("This screens seller wording for risk and contradictions. Seller claims remain unverified; it does not replace inspection, diagnostics or provenance checks.")
-        go=st.form_submit_button("ANALYSE DEAL  →",use_container_width=True)
+        go=st.form_submit_button("ANALYSE DEAL  →",use_container_width=True,disabled=bool(selected_model) and (not spec_options or not engine_options))
     if go:
         # Safety gate: never produce a valuation from an engine/year combination that
         # we cannot verify. This prevents a plausible-looking value for the wrong derivative.
-        combo_check=official_combo_verification(
-            official_catalogue,selected_make,selected_model,selected_year,
-            selected_fuel,selected_spec,selected_engine
-        ) if selected_make and selected_model and selected_engine else {"status":"unavailable","reason":"Make, model and engine must be selected."}
+        historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
+        if selected_engine and selected_engine in historical_engines:
+            combo_check={"status":"verified","reason":f"Engine/spec is in DG's year-bounded verified catalogue for {selected_year}.","spec_verified":True}
+        else:
+            combo_check=official_combo_verification(
+                official_catalogue,selected_make,selected_model,selected_year,
+                selected_fuel,selected_spec,selected_engine
+            ) if selected_make and selected_model and selected_engine else {"status":"unavailable","reason":"Make, model and engine must be selected."}
         valuation_blocked=combo_check.get("status")=="blocked"
         if valuation_blocked:
             st.session_state["current_appraisal_ready"]=False
