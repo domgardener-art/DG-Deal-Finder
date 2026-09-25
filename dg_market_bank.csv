@@ -1,1 +1,1 @@
-captured_at,make,model,year,mileage,price,engine,fuel,gearbox,spec,source_id
+observation_id,make,model,title,year,mileage,price,fuel,gearbox,source,source_id,first_seen,last_seen,times_seen,previous_price,price_change,status

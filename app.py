@@ -1,3 +1,4 @@
+import csv
 from urllib.parse import urlencode
 from urllib.parse import quote
 from io import BytesIO
@@ -300,7 +301,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V69 clean valuation build")
+st.caption("DG Deal Finder • V73 stable appraisal")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -1829,37 +1830,79 @@ DG_MARKET_BANK_PATH=Path(__file__).with_name("dg_market_bank.csv")
 def _dg_norm(x):
     return re.sub(r"[^a-z0-9]+"," ",str(x or "").lower()).strip()
 
-def dg_store_market_observations(rows, make="", model=""):
-    """Save genuine priced adverts so DG remembers market evidence."""
+def dg_store_market_observations(rows,make="",model=""):
+    """Persistent DG Market Bank: retain genuine asking-price observations and their history."""
     if not rows: return 0
-    existing=set()
-    if DG_MARKET_BANK_PATH.exists():
+    path=DG_MARKET_BANK_PATH
+    cols=["observation_id","make","model","title","year","mileage","price","fuel","gearbox",
+          "source","source_id","first_seen","last_seen","times_seen","previous_price",
+          "price_change","status"]
+    today=datetime.date.today().isoformat()
+    existing={}
+    if path.exists():
         try:
-            old=pd.read_csv(DG_MARKET_BANK_PATH)
-            for _,r in old.iterrows():
-                existing.add(str(r.get("source_id","")))
+            with path.open("r",encoding="utf-8-sig",newline="") as f:
+                for r in csv.DictReader(f):
+                    oid=r.get("observation_id") or r.get("source_id") or ""
+                    if oid: existing[oid]=r
         except Exception: pass
-    saved=[]
-    now=datetime.datetime.utcnow().replace(microsecond=0).isoformat()+"Z"
-    for car in rows:
-        if not isinstance(car,dict): continue
-        price=_num(car,"price","asking_price","askingPrice")
-        year=_num(car,"year","registration_year","registrationYear")
-        mileage=_num(car,"mileage","miles","odometer")
-        if not price or price<500 or price>250000 or not year: continue
-        sid=str(_pick(car,"id","vehicle_id","stock_id","url","advert_url","link") or "")
-        if not sid:
-            sid="|".join([_dg_norm(make),_dg_norm(model),str(int(year)),str(int(mileage or 0)),str(int(price))])
-        if sid in existing: continue
-        saved.append({"captured_at":now,"make":make or _text(car,"make","manufacturer"),
-                      "model":model or _text(car,"model","model_name"),
-                      "year":int(year),"mileage":int(mileage or 0),"price":float(price),
-                      "engine":extract_engine(car),"fuel":extract_fuel(car),
-                      "gearbox":extract_gearbox(car),"spec":extract_derivative(car),"source_id":sid})
-        existing.add(sid)
-    if not saved: return 0
-    pd.DataFrame(saved).to_csv(DG_MARKET_BANK_PATH,mode="a",header=not DG_MARKET_BANK_PATH.exists() or DG_MARKET_BANK_PATH.stat().st_size==0,index=False)
-    return len(saved)
+    changed=0
+    for r in rows:
+        if not isinstance(r,dict): continue
+        price=float(_num(r,"price","asking_price") or 0)
+        year=int(_num(r,"year") or 0); mileage=int(_num(r,"mileage","miles") or 0)
+        if price<500 or year<1970: continue
+        src=str(r.get("source") or "market")
+        sid=str(r.get("source_id") or r.get("id") or "").strip()
+        title=str(r.get("title") or "").strip()
+        oid=sid or f"{_dg_norm(make)}|{_dg_norm(model)}|{year}|{mileage}|{int(price)}|{_dg_norm(title)[:60]}"
+        oldr=existing.get(oid,{})
+        oldprice=float(_num(oldr,"price") or 0)
+        first=oldr.get("first_seen") or today
+        times=int(float(oldr.get("times_seen") or 0))+1
+        rec={"observation_id":oid,"make":str(r.get("make") or make),"model":str(r.get("model") or model),
+             "title":title,"year":year,"mileage":mileage,"price":price,
+             "fuel":str(r.get("fuel") or ""),"gearbox":str(r.get("gearbox") or ""),
+             "source":src,"source_id":sid,"first_seen":first,"last_seen":today,"times_seen":times,
+             "previous_price":oldprice if oldprice and oldprice!=price else oldr.get("previous_price",""),
+             "price_change":(price-oldprice) if oldprice and oldprice!=price else 0,
+             "status":"active"}
+        existing[oid]=rec; changed+=1
+    try:
+        with path.open("w",encoding="utf-8",newline="") as f:
+            wr=csv.DictWriter(f,fieldnames=cols); wr.writeheader()
+            for r in existing.values(): wr.writerow({k:r.get(k,"") for k in cols})
+    except Exception:
+        return 0
+    return changed
+
+def dg_market_bank_summary(make="",model="",days=180):
+    """Historical observed-advert summary. 'Left market' is never represented as a sold price."""
+    if not DG_MARKET_BANK_PATH.exists(): return {}
+    cutoff=datetime.date.today()-datetime.timedelta(days=int(days))
+    rows=[]
+    try:
+        with DG_MARKET_BANK_PATH.open("r",encoding="utf-8-sig",newline="") as f:
+            for r in csv.DictReader(f):
+                if make and _dg_norm(r.get("make",""))!=_dg_norm(make): continue
+                if model and _dg_norm(r.get("model",""))!=_dg_norm(model): continue
+                try:
+                    d=datetime.date.fromisoformat(r.get("last_seen",""))
+                    if d<cutoff: continue
+                except Exception: pass
+                p=float(_num(r,"price") or 0)
+                if p>0: rows.append(r)
+    except Exception: return {}
+    if not rows: return {}
+    prices=sorted(float(_num(r,"price") or 0) for r in rows if _num(r,"price"))
+    changes=[float(_num(r,"price_change") or 0) for r in rows if float(_num(r,"price_change") or 0)!=0]
+    return {"count":len(rows),"median_price":statistics.median(prices) if prices else 0,
+            "low":prices[max(0,int(len(prices)*.2)-1)] if prices else 0,
+            "high":prices[min(len(prices)-1,int(len(prices)*.8))] if prices else 0,
+            "price_changes":len(changes),
+            "median_price_change":statistics.median(changes) if changes else 0,
+            "days":int(days)}
+
 
 def dg_bank_valuation(make, model, year, mileage):
     """Value from DG's remembered genuine asking-price observations."""
@@ -2022,58 +2065,108 @@ def dg_sparse_age_relevant_value(rows,year,mileage,make="",model=""):
             "evidence":"Sparse age-relevant UK asking-price evidence","manual_required":False,
             "comparables":[x[5] for x in chosen]}
 
-def robust_market_value(rows, year, mileage, make="", model="", asking=0):
-    """Merge every free evidence route; unusable rows from one source cannot block another."""
+def dg_collect_market(make,model,year,mileage=0):
+    """One on-demand collection pass using permitted free sources already supported by DG."""
+    rows=[]; source_counts={"REST":0,"MCP":0,"Public":0}
+    try:
+        rr=autoza_comparables(make,model,year) or []
+        rows.extend(rr); source_counts["REST"]=len(rr)
+    except Exception: pass
+    try:
+        rr=autoza_mcp_comparables(make,model,year,50) or []
+        rows.extend(rr); source_counts["MCP"]=len(rr)
+    except Exception: pass
+    try:
+        rr=autoza_public_market_comparables(make,model,100) or []
+        rows.extend(rr); source_counts["Public"]=len(rr)
+    except Exception: pass
+    # de-dupe before storing
+    clean=[]; seen=set()
+    for r in rows:
+        if not isinstance(r,dict): continue
+        y=int(_num(r,"year") or 0); p=int(_num(r,"price","asking_price") or 0); mi=int(_num(r,"mileage","miles") or 0)
+        if y<1970 or p<500: continue
+        k=(str(r.get("source_id","")),y,mi,p)
+        if k in seen: continue
+        seen.add(k); clean.append(r)
+    stored=dg_store_market_observations(clean,make,model)
+    return {"rows":clean,"stored":stored,"sources":source_counts}
+
+def dg_market_bank_stats():
+    if not DG_MARKET_BANK_PATH.exists(): return {"rows":0,"models":0}
+    try:
+        with DG_MARKET_BANK_PATH.open("r",encoding="utf-8-sig",newline="") as f:
+            rr=list(csv.DictReader(f))
+        models={( _dg_norm(r.get("make","")), _dg_norm(r.get("model","")) ) for r in rr if r.get("make") and r.get("model")}
+        return {"rows":len(rr),"models":len(models)}
+    except Exception:
+        return {"rows":0,"models":0}
+
+def robust_market_value(rows,year,mileage,make="",model="",asking=0):
     live=list(rows or [])
-    try:
-        live.extend(autoza_mcp_comparables(make,model,year,100) if make and model else [])
-    except Exception: pass
-    try:
-        live.extend(autoza_public_market_comparables(make,model,100) if make and model else [])
-    except Exception: pass
-    # dedupe by source id or core observation
-    dedup=[]; seen=set()
+    for fn,args in [
+        (autoza_mcp_comparables,(make,model,year,50)),
+        (autoza_public_market_comparables,(make,model,100)),
+    ]:
+        try:
+            live.extend(fn(*args) or [])
+        except Exception:
+            pass
+
+    # de-duplicate but do not discard valid sparse observations
+    clean=[]; seen=set()
     for r in live:
         if not isinstance(r,dict): continue
-        sid=str(r.get("source_id") or r.get("id") or "")
-        if not sid:
-            sid="|".join(str(x) for x in (_num(r,"year"),_num(r,"mileage","miles"),_num(r,"price","asking_price")))
-        if sid in seen: continue
-        seen.add(sid); dedup.append(r)
-    live=dedup
+        y=int(_num(r,"year") or 0); p=float(_num(r,"price","asking_price") or 0)
+        mi=int(_num(r,"mileage","miles") or 0)
+        if not (1970<=y<=datetime.datetime.now().year+1 and 500<=p<=250000): continue
+        key=(str(r.get("source_id","")),y,mi,int(p))
+        if key in seen: continue
+        seen.add(key); clean.append(r)
+    live=clean
+
     try: dg_store_market_observations(live,make,model)
     except Exception: pass
+
     try:
-        direct=estimate_market_from_comps(live,year,mileage)
-        if isinstance(direct,dict):
-            v=float(direct.get("retail") or direct.get("value") or direct.get("average") or 0)
-            if v>0:
-                direct["value"]=v; direct["retail"]=v
-                direct["evidence"]="Current UK comparable asking prices"
-                direct["manual_required"]=False
-                direct["raw_evidence_count"]=len(live)
-                return direct
-    except Exception: pass
+        est=estimate_market_from_comps(live,year,mileage) or {}
+        val=float(est.get("retail") or est.get("value") or est.get("average") or 0)
+        if val>0:
+            return {"value":val,"retail":val,"low":float(est.get("low") or val),
+                    "high":float(est.get("high") or val),"count":int(est.get("count") or len(live)),
+                    "confidence":est.get("confidence","Medium"),
+                    "evidence":est.get("evidence","Current UK asking-price comparables"),
+                    "manual_required":False,"comparables":est.get("comparables",live[:10])}
+    except Exception:
+        pass
+
+    # Critical rescue: genuine same-model observations within ±3 years.
     sparse=dg_sparse_age_relevant_value(live,year,mileage,make,model)
-    if sparse.get("value",0)>0: return sparse
-    bank=dg_bank_valuation(make,model,year,mileage)
-    if bank.get("value",0)>0: return bank
-    guide={}
-    try: guide=autoza_price_guide(make,model)
+    if float(sparse.get("value",0) or 0)>0:
+        return sparse
+
+    try:
+        bank=dg_bank_valuation(make,model,year,mileage) or {}
+        if float(bank.get("value",0) or 0)>0: return bank
     except Exception: pass
-    if not guide:
-        try: guide=autoza_public_model_guide(make,model)
-        except Exception: pass
-    try: typical=float(guide.get("typical") or 0)
-    except Exception: typical=0
-    age=max(0,datetime.datetime.now().year-int(year or datetime.datetime.now().year))
-    if typical>250 and age<=6:
-        return {"value":typical,"retail":typical,"low":float(guide.get("low") or typical*.90),
-                "high":float(guide.get("high") or typical*1.10),"count":int(guide.get("count") or 0),
-                "confidence":"Low","evidence":guide.get("source") or "UK model asking-price guide",
-                "manual_required":False}
-    return {"value":0,"retail":0,"low":0,"high":0,"count":0,"confidence":"None",
-            "evidence":"No age-relevant free market evidence yet","manual_required":True}
+
+    try:
+        hist=dg_market_bank_summary(make,model,180) or {}
+        if hist.get("count",0)>=3 and float(hist.get("median_price",0) or 0)>0:
+            v=float(hist["median_price"])
+            return {"value":v,"retail":v,"low":float(hist.get("low") or v),
+                    "high":float(hist.get("high") or v),"count":int(hist["count"]),
+                    "confidence":"Medium" if hist["count"]>=6 else "Low",
+                    "evidence":"DG observed asking-price bank","manual_required":False,"comparables":[]}
+    except Exception: pass
+
+    try:
+        guide=autoza_price_guide(make,model) or {}
+        if float(guide.get("value",0) or 0)>0: return guide
+    except Exception: pass
+
+    return {"value":0,"retail":0,"low":0,"high":0,"count":0,"confidence":"No data",
+            "evidence":"No usable market valuation","manual_required":True,"comparables":[]}
 
 def manual_market_override(default=0):
     return st.number_input("Manual retail estimate (£)",min_value=0,max_value=250000,
@@ -3312,3 +3405,14 @@ with tabs[3]:
     st.session_state.min_roi=st.number_input("Minimum ROI (%)",0,200,int(st.session_state.min_roi),1)
     st.session_state.contingency_pct=st.number_input("Prep contingency (%)",0,100,int(st.session_state.contingency_pct),5)
     st.markdown('<div class="card"><div class="meta"><b>Contribution</b> is estimated retail less purchase, prep, selling costs and prep contingency. It is not net profit after fixed overhead, tax or finance.</div></div></div>',unsafe_allow_html=True)
+with st.sidebar.expander("DG MARKET COLLECTOR", expanded=False):
+    _bank_stats=dg_market_bank_stats()
+    st.caption(f"Saved observations: {_bank_stats['rows']} • model cohorts: {_bank_stats['models']}")
+    st.caption("Every appraisal already saves genuine market observations. Use COLLECT NOW to run an extra pass for the currently selected vehicle.")
+    if st.button("COLLECT CURRENT VEHICLE", use_container_width=True, key="dg_collect_current"):
+        try:
+            _cr=dg_collect_market(selected_make,selected_model,selected_year,mileage)
+            st.success(f"Collected {len(_cr['rows'])} usable observations • wrote {_cr['stored']} records")
+            st.caption("Sources: "+", ".join(f"{k} {v}" for k,v in _cr["sources"].items()))
+        except Exception as _e:
+            st.error(f"Collector could not complete: {_e}")
