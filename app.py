@@ -1,4 +1,5 @@
 from urllib.parse import urlencode
+from io import BytesIO
 from urllib.request import Request, urlopen
 import streamlit as st
 import pandas as pd
@@ -638,6 +639,97 @@ def free_models_for_make_year(make, year):
     # a network call every time a user changes the dropdown.
     return UK_MODEL_CATALOGUE.get(make, [])
 
+
+# ---- Official UK bulk vehicle catalogue ------------------------------------
+# DfT/DVLA df_VEH0270: first registrations by make, generic model, detailed
+# model, fuel and engine-size band. This is a bulk government CSV, cached once;
+# it is not queried per vehicle like an API.
+DFT_UK_CATALOGUE_URL="https://assets.publishing.service.gov.uk/media/69ef3ecf9ca985145673b9ec/df_VEH0270.csv"
+
+def _display_make(value):
+    raw=str(value or "").strip()
+    aliases={"BMW":"BMW","MG":"MG","MINI":"MINI","DS":"DS","SEAT":"SEAT","KIA":"Kia",
+             "SKODA":"Skoda","MERCEDES-BENZ":"Mercedes-Benz","ALFA ROMEO":"Alfa Romeo",
+             "LAND ROVER":"Land Rover","ASTON MARTIN":"Aston Martin","ROLLS-ROYCE":"Rolls-Royce"}
+    return aliases.get(raw.upper(),raw.title())
+
+def _dft_model_name(make,gen_model):
+    x=str(gen_model or "").strip()
+    mk=str(make or "").strip()
+    if x.upper().startswith(mk.upper()+" "): x=x[len(mk):].strip()
+    return x
+
+def _dft_number(series):
+    return pd.to_numeric(series.astype(str).str.replace("[c]","1",regex=False)
+                         .str.replace("[x]","0",regex=False).str.replace("[z]","0",regex=False),
+                         errors="coerce").fillna(0)
+
+@st.cache_data(ttl=86400,show_spinner=False)
+def load_official_uk_catalogue():
+    """Load the official UK bulk catalogue once; return a compact car-only frame."""
+    try:
+        req=Request(DFT_UK_CATALOGUE_URL,headers={"User-Agent":"DG-Deal-Finder/1.0"})
+        with urlopen(req,timeout=35) as response:
+            raw=response.read()
+        df=pd.read_csv(BytesIO(raw),low_memory=False)
+        needed=[c for c in ["BodyType","Make","GenModel","Model","Fuel","EngineSizeSimple","EngineSizeDesc"] if c in df.columns]
+        year_cols=[c for c in df.columns if str(c).strip().isdigit() and 2000<=int(str(c).strip())<=2035]
+        df=df[needed+year_cols].copy()
+        if "BodyType" in df.columns:
+            df=df[df["BodyType"].astype(str).str.lower().eq("cars")]
+        for c in ["Make","GenModel","Model","Fuel","EngineSizeDesc"]:
+            if c in df.columns: df[c]=df[c].fillna("").astype(str).str.strip()
+        if "EngineSizeSimple" in df.columns:
+            df["EngineSizeSimple"]=pd.to_numeric(df["EngineSizeSimple"],errors="coerce")
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def official_uk_makes(df):
+    if df is None or df.empty or "Make" not in df.columns:return []
+    return sorted({_display_make(x) for x in df["Make"].dropna().unique() if str(x).strip()})
+
+def _match_official_make(df,make):
+    if df is None or df.empty:return df.iloc[0:0] if isinstance(df,pd.DataFrame) else pd.DataFrame()
+    target=str(make or "").replace("-"," ").replace("  "," ").lower()
+    return df[df["Make"].astype(str).str.replace("-"," ",regex=False).str.lower().eq(target)]
+
+def official_uk_models(df,make,year=None):
+    d=_match_official_make(df,make)
+    if d.empty:return []
+    # When annual first-registration counts exist for the selected year, prefer
+    # models actually registered that year; otherwise keep the full make range.
+    yc=str(int(year)) if year else ""
+    if yc in d.columns:
+        active=d[_dft_number(d[yc])>0]
+        if not active.empty:d=active
+    vals={_dft_model_name(x,y) for x,y in zip(d["Make"],d["GenModel"])}
+    return sorted(v for v in vals if v and v.lower() not in ("unknown","other"))
+
+def _engine_label(simple,desc):
+    try:
+        cc=int(float(simple))
+        if cc>0:return f"{cc/1000:.1f}L ({str(desc).strip()})" if str(desc).strip() else f"{cc/1000:.1f}L"
+    except Exception:pass
+    return str(desc or "").strip()
+
+def official_uk_vehicle_choices(df,make,model,year=None):
+    d=_match_official_make(df,make)
+    if d.empty:return ([],[],[],[])
+    wanted=str(model or "").strip().lower()
+    mask=d.apply(lambda r:_dft_model_name(r.get("Make",""),r.get("GenModel","")).lower()==wanted,axis=1)
+    d=d[mask]
+    yc=str(int(year)) if year else ""
+    if yc in d.columns:
+        active=d[_dft_number(d[yc])>0]
+        if not active.empty:d=active
+    fuels=sorted({str(x).strip() for x in d.get("Fuel",pd.Series(dtype=str)) if str(x).strip()})
+    engines=sorted({_engine_label(a,b) for a,b in zip(d.get("EngineSizeSimple",[]),d.get("EngineSizeDesc",[])) if _engine_label(a,b)})
+    # DVLA's detailed Model field is the closest official bulk-data equivalent
+    # to derivative/spec. Keep it verbatim rather than inventing a trim.
+    specs=sorted({str(x).strip() for x in d.get("Model",pd.Series(dtype=str)) if str(x).strip()})
+    return engines,fuels,[],specs
+
 UK_MAKES=["Abarth","Alfa Romeo","Audi","BMW","Citroen","Cupra","Dacia","DS","Fiat","Ford","Honda","Hyundai","Jaguar","Jeep","Kia","Land Rover","Lexus","Mazda","Mercedes-Benz","MG","MINI","Mitsubishi","Nissan","Peugeot","Porsche","Renault","SEAT","Skoda","Smart","Subaru","Suzuki","Tesla","Toyota","Vauxhall","Volkswagen","Volvo"]
 COMMON_UK_SPECS={
 ("Ford","Fiesta"):["Style","Style+","Edge","Zetec","Zetec S","Titanium","Titanium X","ST-Line","ST-Line X","ST"],
@@ -753,6 +845,12 @@ def taxonomy_options(variants,spec="",engine="",fuel=""):
 # ---------- VEHICLE SPEC CASCADE ----------
 # Reliable local fallback for common UK stock. Live sources augment this when available.
 DG_POWERTRAIN_CATALOG = {
+    ("Porsche","911"): {"engines":["3.0L Twin-Turbo Flat-6","3.8L Twin-Turbo Flat-6","4.0L Flat-6"],"fuels":["Petrol"],"gearboxes":["Automatic","Manual"],"specs":["Carrera","Carrera S","Carrera 4","Carrera 4S","Targa 4","Targa 4S","Carrera T","Carrera GTS","Carrera 4 GTS","Turbo","Turbo S","GT3","GT3 Touring","GT3 RS"]},
+    ("Porsche","718 Cayman"): {"engines":["2.0L Turbo","2.5L Turbo","4.0L Flat-6"],"fuels":["Petrol"],"gearboxes":["Manual","Automatic"],"specs":["Cayman","Cayman T","Cayman S","Cayman GTS","GTS 4.0","GT4","GT4 RS"]},
+    ("Porsche","718 Boxster"): {"engines":["2.0L Turbo","2.5L Turbo","4.0L Flat-6"],"fuels":["Petrol"],"gearboxes":["Manual","Automatic"],"specs":["Boxster","Boxster T","Boxster S","Boxster GTS","GTS 4.0","Spyder","Spyder RS"]},
+    ("Porsche","Macan"): {"engines":["2.0L","3.0L","3.6L"],"fuels":["Petrol","Diesel"],"gearboxes":["Automatic"],"specs":["Macan","S","GTS","Turbo"]},
+    ("Porsche","Cayenne"): {"engines":["3.0L","3.6L","4.0L","4.2L"],"fuels":["Petrol","Diesel","Hybrid"],"gearboxes":["Automatic"],"specs":["Cayenne","S","GTS","Turbo","Turbo S","E-Hybrid"]},
+
     ("Mazda","MX-5"): {
         "engines":["1.5 SKYACTIV-G","2.0 SKYACTIV-G"],
         "fuels":["Petrol"],
@@ -1428,16 +1526,21 @@ tabs=st.tabs(["APPRAISAL","SAVED APPRAISALS","MARKET","SETTINGS"])
 with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG buying desk</div><div class="hero">Appraise a vehicle</div><div class="sub">Vehicle, market, condition and deal risk — one buying decision.</div></div>',unsafe_allow_html=True)
     st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
-    st.caption("Choose make, year and model. DG keeps the selector lightweight; the deeper live-market search runs only when you tap ANALYSE DEAL.")
+    st.caption("Choose make, year and model. DG uses its cached official UK catalogue first, with live/API data only as enrichment.")
+    official_catalogue=load_official_uk_catalogue()
+    catalogue_makes=official_uk_makes(official_catalogue)
+    make_options=_merge_unique(UK_MAKES,catalogue_makes)
     a,b=st.columns(2)
-    selected_make=a.selectbox("Make",[""]+UK_MAKES)
+    selected_make=a.selectbox("Make",[""]+make_options)
     selected_year=b.selectbox("Year",list(range(2026,1995,-1)),index=16)
     models=[]
     if selected_make:
         try:
-            models=free_models_for_make_year(selected_make,selected_year)
+            embedded_models=free_models_for_make_year(selected_make,selected_year)
+            official_models=official_uk_models(official_catalogue,selected_make,selected_year)
+            models=_merge_unique(official_models,embedded_models)
         except Exception:
-            models=[]
+            models=free_models_for_make_year(selected_make,selected_year)
     selected_model=st.selectbox("Model",["— Choose model —"]+models,disabled=not bool(selected_make))
     with st.expander("Model missing from the list?"):
         manual_model=st.text_input("Manual model",placeholder="Only use this when the actual model is missing, e.g. Octavia")
@@ -1461,20 +1564,42 @@ with tabs[0]:
     engines,fuels,gearboxes,derivatives,choice_sources=robust_vehicle_choices(
         selected_make,selected_model,selected_year,selector_rows
     ) if selected_make and selected_model else ([],[],[],[],[])
+    official_engines,official_fuels,official_gearboxes,official_specs=official_uk_vehicle_choices(
+        official_catalogue,selected_make,selected_model,selected_year
+    ) if selected_make and selected_model else ([],[],[],[])
+    engines=_merge_unique(official_engines,engines)
+    fuels=_merge_unique(official_fuels,fuels)
+    gearboxes=_merge_unique(official_gearboxes,gearboxes)
+    derivatives=_merge_unique(official_specs,derivatives)
+    if any((official_engines,official_fuels,official_specs)):
+        choice_sources=["official UK bulk catalogue"]+choice_sources
+    # Final resilience layer: external sources can ADD choices but cannot erase known
+    # model-level data. Manual overrides remain available for exact historical variants.
+    dg_engines,dg_fuels,dg_gearboxes,dg_specs=local_vehicle_choices(selected_make,selected_model,selected_year)
+    engines=_merge_unique(engines,dg_engines)
+    fuels=_merge_unique(fuels,dg_fuels)
+    gearboxes=_merge_unique(gearboxes,dg_gearboxes)
+    derivatives=_merge_unique(derivatives,dg_specs)
 
     taxonomy_verified=bool(taxonomy)
+    official_catalogue_loaded=not official_catalogue.empty
+    if not official_catalogue_loaded:
+        st.caption("Official UK bulk catalogue is temporarily unavailable; DG fallback and enrichment sources are still active.")
 
     # Fuel first: this immediately removes petrol/diesel/hybrid/EV derivatives and engines
     # that cannot belong to the selected fuel type for the exact chosen year.
     if taxonomy_verified:
-        _,_,_,fuel_options,_=taxonomy_options(taxonomy)
+        _,_,_,tax_fuels,_=taxonomy_options(taxonomy)
+        fuel_options=_merge_unique(tax_fuels,fuels)
     else:
         fuel_options=fuels
-    selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,disabled=not bool(selected_model))
+    fuel_index=1 if len(fuel_options)==1 else 0
+    selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,index=fuel_index,disabled=not bool(selected_model))
     if selected_fuel.startswith("—"): selected_fuel=""
 
     if taxonomy_verified:
-        fuel_rows,spec_options,_,_,_=taxonomy_options(taxonomy,fuel=selected_fuel)
+        fuel_rows,tax_specs,_,_,_=taxonomy_options(taxonomy,fuel=selected_fuel)
+        spec_options=_merge_unique(tax_specs,derivatives)
     else:
         fuel_rows=[]
         spec_options=derivatives
@@ -1484,7 +1609,7 @@ with tabs[0]:
         help="DG combines structured taxonomy when available, clean live-advert trim fields and built-in UK model trim suggestions. Suggestions are not presented as authoritative historical derivative data.")
     if selected_spec.startswith("—"): selected_spec=""
     if taxonomy_verified:
-        st.caption("Fuel → spec → engine → gearbox. Verified taxonomy choices are restricted to the exact selected year.")
+        st.caption("Fuel → spec → engine → gearbox. Verified taxonomy is prioritised; DG fallback choices are also kept so incomplete free data cannot make the vehicle unusable.")
     else:
         st.caption("Fuel → spec → engine → gearbox. Where the free feed has no structured spec, DG supplies clean model trim suggestions instead of dealer names; use the manual override if the exact historical trim is missing.")
 
@@ -1493,7 +1618,8 @@ with tabs[0]:
         if manual_spec.strip(): selected_spec=manual_spec.strip()
 
     if taxonomy_verified:
-        spec_rows,_,engine_options,_,_=taxonomy_options(taxonomy,spec=selected_spec,fuel=selected_fuel)
+        spec_rows,_,tax_engines,_,_=taxonomy_options(taxonomy,spec=selected_spec,fuel=selected_fuel)
+        engine_options=_merge_unique(tax_engines,engines)
     else:
         spec_rows=[]
         # With no verified taxonomy, narrow live-advert engines by selected fuel where possible.
@@ -1508,8 +1634,9 @@ with tabs[0]:
     if selected_engine.startswith("—"): selected_engine=""
 
     if taxonomy_verified:
-        final_rows,_,_,_,gearbox_options=taxonomy_options(
+        final_rows,_,_,_,tax_gearboxes=taxonomy_options(
             taxonomy,spec=selected_spec,engine=selected_engine,fuel=selected_fuel)
+        gearbox_options=_merge_unique(tax_gearboxes,gearboxes)
     else:
         gearbox_options=gearboxes
     selected_gearbox=st.selectbox("Gearbox",["— Choose gearbox —"]+gearbox_options,
