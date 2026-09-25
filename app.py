@@ -260,35 +260,99 @@ COMMON_UK_SPECS={
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def autoza_comparables(make, model, year, limit=50):
-    """Free live UK dealer-stock comparables via Autoza public read-only API."""
-    params=urlencode({
-        "make":make, "model":model, "min_year":max(1990,int(year)-1),
-        "max_year":int(year)+1, "page":1, "limit":min(int(limit),50)
+def _autoza_mcp(tool_name, arguments):
+    body={"jsonrpc":"2.0","id":1,"method":"tools/call",
+          "params":{"name":tool_name,"arguments":arguments}}
+    req=urllib.request.Request(
+        "https://autoza.co.uk/api/mcp",
+        data=json.dumps(body).encode(),
+        headers={"User-Agent":"DG-Deal-Finder/1.0","Content-Type":"application/json","Accept":"application/json, text/event-stream"},
+        method="POST")
+    with urllib.request.urlopen(req,timeout=25) as r:
+        raw=r.read().decode("utf-8","ignore")
+    # MCP may answer JSON or SSE. Extract the last JSON data frame if SSE.
+    candidates=[]
+    if raw.lstrip().startswith("{"):
+        candidates=[raw]
+    else:
+        candidates=[ln[6:] for ln in raw.splitlines() if ln.startswith("data: ")]
+    if not candidates: raise RuntimeError("No response from market service")
+    res=json.loads(candidates[-1])
+    if res.get("error"): raise RuntimeError(str(res["error"]))
+    result=res.get("result",{})
+    # MCP content commonly wraps tool output as JSON text.
+    for c in result.get("content",[]) if isinstance(result,dict) else []:
+        if isinstance(c,dict) and c.get("type")=="text":
+            txt=c.get("text","")
+            try: return json.loads(txt)
+            except: return {"text":txt}
+    return result
+
+def autoza_comparables(make, model, year, limit=25):
+    # Documented MCP tool: live UK dealer stock.
+    payload=_autoza_mcp("search_used_cars",{
+        "make":make,"model":model,"min_year":max(1990,int(year)-1),
+        "max_year":int(year)+1,"limit":min(int(limit),50)
     })
-    url="https://autoza.co.uk/api/v1/vehicles?"+params
-    req=urllib.request.Request(url,headers={"User-Agent":"DG-Deal-Finder/1.0","Accept":"application/json"})
-    with urllib.request.urlopen(req,timeout=20) as r:
-        payload=json.loads(r.read().decode())
-    return payload.get("data",[]) if isinstance(payload,dict) else []
+    if isinstance(payload,list): return payload
+    if isinstance(payload,dict):
+        for key in ("vehicles","results","cars","data","listings"):
+            if isinstance(payload.get(key),list): return payload[key]
+    return []
+
+def autoza_price_guide(make, model):
+    # Documented MCP tool: current asking-price guidance.
+    return _autoza_mcp("get_uk_price_guide",{"make":make,"model":model})
+
+def _num(d,*keys):
+    if not isinstance(d,dict): return None
+    low={str(k).lower():v for k,v in d.items()}
+    for k in keys:
+        v=low.get(k.lower())
+        if v is not None:
+            try:
+                if isinstance(v,str): v=re.sub(r"[^0-9.]","",v)
+                return float(v)
+            except: pass
+    return None
 
 def estimate_market_from_comps(rows, target_year, target_mileage):
     clean=[]
     for x in rows:
-        try:
-            price=float(x.get("price"))
-            miles=float(x.get("mileage") or 0)
-            year=int(x.get("year"))
-            if price>0: clean.append((price,miles,year,x))
-        except: pass
+        if not isinstance(x,dict): continue
+        price=_num(x,"price","asking_price","askingPrice")
+        miles=_num(x,"mileage","miles","odometer")
+        year=_num(x,"year","registration_year","registrationYear")
+        if price and price>0:
+            year=int(year or target_year); miles=float(miles or target_mileage or 0)
+            clean.append((price,miles,year,x))
     if not clean: return None
-    # Prefer closest mileage; year already constrained to +/-1.
-    clean.sort(key=lambda z:(abs(z[2]-int(target_year))*30000 + abs(z[1]-float(target_mileage or z[1]))))
+    tm=float(target_mileage or 0)
+    clean.sort(key=lambda z:(abs(z[2]-int(target_year))*30000 + (abs(z[1]-tm) if tm else 0)))
     chosen=clean[:min(12,len(clean))]
     prices=sorted(z[0] for z in chosen)
-    n=len(prices)
-    median=prices[n//2] if n%2 else (prices[n//2-1]+prices[n//2])/2
+    n=len(prices); median=prices[n//2] if n%2 else (prices[n//2-1]+prices[n//2])/2
     return {"retail":median,"low":prices[0],"high":prices[-1],"count":len(chosen),"rows":[z[3] for z in chosen]}
+
+def analyse_risk(year,mileage,make,model,notes=""):
+    age=max(0,2026-int(year))
+    typical=max(1,age*7400)
+    ratio=(float(mileage)/typical) if age else 1
+    points=0; reasons=[]
+    if age>=15: points+=2; reasons.append("15+ years old")
+    elif age>=10: points+=1; reasons.append("10+ years old")
+    if ratio>=1.5: points+=2; reasons.append("mileage is very high for age")
+    elif ratio>=1.15: points+=1; reasons.append("mileage is above typical for age")
+    elif ratio<=0.6: points+=1; reasons.append("unusually low mileage needs history verification")
+    text=(notes or "").lower()
+    flags={"cat s":"Category S history","cat n":"Category N history","warning light":"warning light stated",
+           "engine light":"engine warning stated","gearbox":"gearbox issue mentioned","overheat":"overheating mentioned",
+           "smoke":"smoke mentioned","no mot":"no MOT stated","knock":"knocking noise mentioned"}
+    for term,label in flags.items():
+        if term in text: points+=2; reasons.append(label)
+    level="High" if points>=4 else ("Medium" if points>=2 else "Low")
+    if not reasons: reasons=["No obvious age/mileage/text risk flags detected"]
+    return level,reasons
 
 def dvla_lookup(reg):
     """Official DVLA Vehicle Enquiry Service lookup by VRM."""
@@ -519,8 +583,20 @@ with tabs[0]:
         if st.button("GET LIVE MARKET ESTIMATE",use_container_width=True,type="primary"):
             try:
                 with st.spinner("Checking similar UK dealer adverts…"):
-                    comps=autoza_comparables(selected_make,selected_model,selected_year,50)
+                    comps=autoza_comparables(selected_make,selected_model,selected_year,25)
                     market=estimate_market_from_comps(comps,selected_year,cat_mileage)
+                    if not market:
+                        guide=autoza_price_guide(selected_make,selected_model)
+                        # Extract common price-guide names recursively.
+                        typical=_pick(guide,"typical","typical_price","typicalPrice","median","average","average_price")
+                        low=_pick(guide,"lowest","low","min","minimum")
+                        high=_pick(guide,"highest","high","max","maximum")
+                        def cv(v):
+                            try: return float(re.sub(r"[^0-9.]","",str(v)))
+                            except: return None
+                        typical,low,high=cv(typical),cv(low),cv(high)
+                        if typical:
+                            market={"retail":typical,"low":low or typical,"high":high or typical,"count":0,"rows":[]}
                 if market:
                     st.session_state["market_estimate"]=market
                     st.session_state["market_retail"]=int(round(market["retail"]/50)*50)
@@ -554,10 +630,13 @@ with tabs[0]:
         reg=st.text_input("Registration",value=st.session_state.get("imp_reg",""),placeholder="e.g. CV60 ZLZ").upper().replace(" ","")
         vehicle=st.text_input("Vehicle",value=st.session_state.get("imp_vehicle",""),placeholder="Make, model and derivative")
         a,b=st.columns(2); mileage=a.number_input("Mileage",0,300000,int(st.session_state.get("imp_mileage",0)),1000); asking=b.number_input("Seller asking (£)",0,100000,int(st.session_state.get("imp_asking",0)),50)
-        a,b=st.columns(2); retail=a.number_input("Retail estimate (£)",0,150000,0,50); prep=b.number_input("Prep budget (£)",0,20000,400,50)
-        a,b=st.columns(2); fees=a.number_input("Fees / warranty (£)",0,10000,250,25); risk=b.selectbox("Risk",["Low","Medium","High"],1)
+        a,b=st.columns(2); retail=a.number_input("Retail estimate (£)",0,150000,int(st.session_state.get("market_retail",0)),50,help="Auto-filled from live market data; editable."); prep=b.number_input("Prep budget (£)",0,20000,400,50)
+        a,b=st.columns(2); fees=a.number_input("Fees / warranty (£)",0,10000,250,25); risk="Medium"
         target_margin=st.number_input("Desired contribution / margin (£)",0,20000,int(st.session_state.min_profit),50,help="Your target gross contribution before fixed overhead and tax.")
         notes=st.text_area("Notes",value=st.session_state.get("imp_desc",""),placeholder="History, MOT, tyres, damage, keys…")
+        risk,risk_reasons=analyse_risk(st.session_state.get("selected_year",2020),mileage,st.session_state.get("selected_make",""),st.session_state.get("selected_model",""),notes)
+        st.markdown(f"**DG risk analysis: {risk}**")
+        st.caption(" · ".join(risk_reasons))
         if st.session_state.get("scan_year") or st.session_state.get("scan_fuel") or st.session_state.get("scan_gearbox"):
             st.caption("Detected: " + " · ".join([str(x) for x in [st.session_state.get("scan_year"),st.session_state.get("scan_fuel"),st.session_state.get("scan_gearbox")] if x]))
         go=st.form_submit_button("ANALYSE DEAL",use_container_width=True)
