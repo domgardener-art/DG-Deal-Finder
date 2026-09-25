@@ -662,6 +662,27 @@ def _display_make(value):
              "LAND ROVER":"Land Rover","ASTON MARTIN":"Aston Martin","ROLLS-ROYCE":"Rolls-Royce"}
     return aliases.get(raw.upper(),raw.title())
 
+MODEL_ALIASES={
+ ("PORSCHE","CAYMAN"):["CAYMAN","718 CAYMAN"],("PORSCHE","718 CAYMAN"):["CAYMAN","718 CAYMAN"],
+ ("PORSCHE","BOXSTER"):["BOXSTER","718 BOXSTER"],("PORSCHE","718 BOXSTER"):["BOXSTER","718 BOXSTER"],
+}
+def model_aliases(make,model):
+    mk=str(make or "").strip().upper(); md=str(model or "").strip().upper()
+    return {str(x).strip().upper() for x in MODEL_ALIASES.get((mk,md),[md]) if str(x).strip()}
+def _official_model_mask(df,make,model):
+    aliases=model_aliases(make,model)
+    vals=df.apply(lambda r:_dft_model_name(r.get("Make",""),r.get("GenModel","")).upper(),axis=1)
+    return vals.isin(aliases)
+def friendly_model_name(make,value):
+    x=str(value or "").strip()
+    if str(make or "").strip().upper()=="PORSCHE" and x.upper()=="718 CAYMAN": return "Cayman"
+    if str(make or "").strip().upper()=="PORSCHE" and x.upper()=="718 BOXSTER": return "Boxster"
+    return x
+def lookup_model_name(make,model):
+    if str(make or "").strip().upper()=="PORSCHE" and str(model or "").strip().upper()=="CAYMAN": return "718 Cayman"
+    if str(make or "").strip().upper()=="PORSCHE" and str(model or "").strip().upper()=="BOXSTER": return "718 Boxster"
+    return model
+
 def _dft_model_name(make,gen_model):
     x=str(gen_model or "").strip()
     mk=str(make or "").strip()
@@ -724,7 +745,7 @@ def official_uk_models(df,make,year=None):
     if yc in d.columns:
         active=d[_dft_number(d[yc])>0]
         if not active.empty:d=active
-    vals={_dft_model_name(x,y) for x,y in zip(d["Make"],d["GenModel"])}
+    vals={friendly_model_name(make,_dft_model_name(x,y)) for x,y in zip(d["Make"],d["GenModel"])}
     return sorted(v for v in vals if v and v.lower() not in ("unknown","other"))
 
 def _engine_label(simple,desc):
@@ -737,9 +758,7 @@ def _engine_label(simple,desc):
 def official_uk_vehicle_choices(df,make,model,year=None):
     d=_match_official_make(df,make)
     if d.empty:return ([],[],[],[])
-    wanted=str(model or "").strip().lower()
-    mask=d.apply(lambda r:_dft_model_name(r.get("Make",""),r.get("GenModel","")).lower()==wanted,axis=1)
-    d=d[mask]
+    d=d[_official_model_mask(d,make,model)]
     yc=str(int(year)) if year else ""
     if yc in d.columns:
         d=d[_dft_number(d[yc])>0]
@@ -776,8 +795,7 @@ def official_year_spec_options(df,make,model,year,fuel=""):
     if not yc or yc not in df.columns:return []
     d=_match_official_make(df,make)
     if d.empty:return []
-    wanted=str(model or "").strip().lower()
-    d=d[d.apply(lambda r:_dft_model_name(r.get("Make",""),r.get("GenModel","")).lower()==wanted,axis=1)]
+    d=d[_official_model_mask(d,make,model)]
     if d.empty:return []
     d=d[_dft_number(d[yc])>0]
     if fuel:
@@ -801,8 +819,7 @@ def official_year_engine_options(df,make,model,year,fuel="",spec=""):
     if not yc or yc not in df.columns:return []
     d=_match_official_make(df,make)
     if d.empty:return []
-    wanted=str(model or "").strip().lower()
-    d=d[d.apply(lambda r:_dft_model_name(r.get("Make",""),r.get("GenModel","")).lower()==wanted,axis=1)]
+    d=d[_official_model_mask(d,make,model)]
     if d.empty:return []
     d=d[_dft_number(d[yc])>0]
     if fuel:
@@ -846,8 +863,7 @@ def official_combo_verification(df,make,model,year,fuel="",spec="",engine=""):
         return {"status":"unavailable","reason":"Official year-level engine verification is not available for this year."}
     d=_match_official_make(df,make)
     if d.empty:return {"status":"blocked","reason":f"No official UK records found for {make} in {year}."}
-    wanted=str(model or "").strip().lower()
-    d=d[d.apply(lambda r:_dft_model_name(r.get("Make",""),r.get("GenModel","")).lower()==wanted,axis=1)]
+    d=d[_official_model_mask(d,make,model)]
     if d.empty:return {"status":"blocked","reason":f"No official UK records found for {make} {model} in {year}."}
     d=d[_dft_number(d[yc])>0]
     if d.empty:return {"status":"blocked","reason":f"{make} {model} has no first-registration record in the official UK {year} data."}
@@ -1085,6 +1101,7 @@ def _merge_unique(*groups):
     return out
 
 def local_vehicle_choices(make,model,year=None):
+    model=lookup_model_name(make,model)
     d=DG_POWERTRAIN_CATALOG.get((make,model),{})
     specs=_merge_unique(d.get("specs",[]))
     try: y=int(year) if year is not None else None
@@ -1694,6 +1711,8 @@ with tabs[0]:
             embedded_models=free_models_for_make_year(selected_make,selected_year)
             official_models=official_uk_models(official_catalogue,selected_make,selected_year)
             models=_merge_unique(official_models,embedded_models)
+            if selected_make=="Porsche":
+                models=_merge_unique(models,["911","Cayman","Boxster","Macan","Cayenne","Panamera","Taycan"])
         except Exception:
             models=free_models_for_make_year(selected_make,selected_year)
     selected_model=st.selectbox("Model",["— Choose model —"]+models,disabled=not bool(selected_make))
@@ -1702,6 +1721,7 @@ with tabs[0]:
         if manual_model.strip():
             selected_model=manual_model.strip()
     if selected_model=="— Choose model —": selected_model=""
+    lookup_model=lookup_model_name(selected_make,selected_model)
 
     # Spec-first selector backed by a separate vehicle taxonomy.
     # Keep selector interaction fast: live adverts are deliberately NOT fetched here.
@@ -1715,12 +1735,12 @@ with tabs[0]:
     # Speed: official UK bulk data is local-in-memory after the first cached load.
     # Only call the external taxonomy service when official data has no useful choices.
     if selected_make and selected_model and not official_has_choices:
-        try: taxonomy=fleetbyte_variants(selected_make,selected_model,selected_year)
+        try: taxonomy=fleetbyte_variants(selected_make,lookup_model,selected_year)
         except Exception as e: taxonomy_error=str(e)
 
     # Live adverts remain valuation evidence. Taxonomy is the compatibility source.
     engines,fuels,gearboxes,derivatives,choice_sources=robust_vehicle_choices(
-        selected_make,selected_model,selected_year,selector_rows
+        selected_make,lookup_model,selected_year,selector_rows
     ) if selected_make and selected_model else ([],[],[],[],[])
     official_engines,official_fuels,official_gearboxes,official_specs=official_uk_vehicle_choices(
         official_catalogue,selected_make,selected_model,selected_year
