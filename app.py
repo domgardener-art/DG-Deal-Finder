@@ -1008,6 +1008,7 @@ with tabs[0]:
         disabled=not bool(selected_model),
         help="Spec is selected first. When the free taxonomy has this vehicle/year, all later choices are restricted to valid combinations.")
     if selected_spec.startswith("—"): selected_spec=""
+    st.caption("Spec first → DG narrows engine, fuel and gearbox for the selected year/derivative where verified compatibility data is available.")
 
     with st.expander("Exact spec not listed?"):
         manual_spec=st.text_input("Spec override",placeholder="e.g. vRS")
@@ -1331,21 +1332,25 @@ with tabs[0]:
 
         st.markdown('<div class="section">What if things go wrong?</div>',unsafe_allow_html=True)
         downside_retail=max(0,recommended_retail-500)
-        stress_retail=downside_retail-(asking+prep+fees+contingency)
-        stress_prep=recommended_retail-(asking+prep+500+fees+contingency)
-        stress_both=downside_retail-(asking+prep+500+fees+contingency)
-        break_even=asking+prep+fees+contingency
-        st.caption("How much contribution is left if the deal goes against you.")
-        c1,c2=st.columns(2); c1.metric("Sell £500 cheaper",f"£{stress_retail:,.0f}"); c2.metric("Prep £500 dearer",f"£{stress_prep:,.0f}")
-        c1,c2=st.columns(2); c1.metric("Both happen",f"£{stress_both:,.0f}"); c2.metric("Sale price before loss",f"£{break_even:,.0f}")
-        st.markdown("**What those figures mean**")
-        st.write(f"**Sell £500 cheaper:** recommended retail £{recommended_retail:,.0f} minus £500, then the purchase and entered costs are deducted → £{stress_retail:,.0f} contribution.")
-        st.write(f"**Prep £500 dearer:** adds another £500 to prep while keeping the recommended selling price → £{stress_prep:,.0f} contribution.")
-        st.write(f"**Both happen:** combines both downside cases → £{stress_both:,.0f} contribution.")
-        st.write(f"**Sale price before loss:** about £{break_even:,.0f}; below this, the entered purchase/prep/cost assumptions produce a loss.")
-        if stress_both<0: st.error(f"If BOTH happen, the deal loses about £{abs(stress_both):,.0f}. Safety margin is poor.")
-        elif stress_both<target_margin/2: st.warning(f"If BOTH happen, about £{stress_both:,.0f} remains. Safety margin is tight.")
-        else: st.success(f"If BOTH happen, about £{stress_both:,.0f} remains. Safety margin is healthy.")
+        stress_retail=downside_retail-(asking+prep+fees+mot_notes_cost+contingency)
+        stress_prep=recommended_retail-(asking+prep+500+fees+mot_notes_cost+contingency)
+        stress_both=downside_retail-(asking+prep+500+fees+mot_notes_cost+contingency)
+        break_even=asking+prep+fees+mot_notes_cost+contingency
+        st.caption("Quick downside check using the same costs as the main appraisal.")
+        st.markdown(f"**£500 lower sale:** £{stress_retail:,.0f} contribution")
+        st.caption("DG retail reduced by £500.")
+        st.markdown(f"**£500 extra prep:** £{stress_prep:,.0f} contribution")
+        st.caption("Prep costs £500 more than entered.")
+        st.markdown(f"**Both together:** £{stress_both:,.0f} contribution")
+        st.caption("Lower retail and extra prep happen together.")
+        st.markdown(f"**Break-even sale price:** £{break_even:,.0f}")
+        st.caption("Approximate sale price where contribution reaches £0, including the MOT advisory allowance.")
+        if stress_both<0:
+            st.error(f"Downside verdict: weak buffer — both changes would produce about a £{abs(stress_both):,.0f} loss.")
+        elif stress_both<target_margin/2:
+            st.warning(f"Downside verdict: thin buffer — about £{stress_both:,.0f} contribution remains.")
+        else:
+            st.success(f"Downside verdict: useful buffer — about £{stress_both:,.0f} contribution remains.")
 
         st.markdown('<div class="section">Quick risk check</div>',unsafe_allow_html=True)
         # Component risks are derived here so the UI cannot reference undefined legacy names.
@@ -1355,16 +1360,18 @@ with tabs[0]:
         valuation_risk = "High" if comparable_count==0 else ("Medium" if comparable_count<5 else "Low")
         provenance_risk = "High" if provenance=="Issue found" or v5c=="Missing / mismatch" else ("Medium" if provenance=="Not checked" or v5c=="Not checked" else "Low")
         commercial_risk="Low" if stress_both>=target_margin*0.5 else ("Medium" if stress_both>0 else "High")
-        c1,c2=st.columns(2); c1.metric("Car / repair risk",mechanical_risk); c2.metric("Price confidence",valuation_risk)
-        c1,c2=st.columns(2); c1.metric("History / paperwork",provenance_risk); c2.metric("Deal safety",commercial_risk)
-        if mechanical_risk=="Medium": st.caption("• Car/repair: allow for some mechanical uncertainty.")
-        elif mechanical_risk=="High": st.caption("• Car/repair: high uncertainty — inspect carefully before buying.")
-        if valuation_risk=="Medium": st.caption("• Price: useful guide, but comparable evidence is only medium confidence.")
-        elif valuation_risk=="High": st.caption("• Price: weak comparable evidence — be cautious.")
-        if provenance_risk=="High": st.caption("• History/paperwork: resolve the flagged issue before purchase.")
-        if commercial_risk=="High": st.caption("• Deal safety: poor — a small price/prep change can wipe out the margin.")
-        elif commercial_risk=="Medium": st.caption("• Deal safety: tight — negotiate harder or keep extra contingency.")
-        else: st.caption("• Deal safety: healthy against the stress test above.")
+        risk_rank={"Low":1,"Medium":2,"High":3}
+        overall_risk=max([mechanical_risk,valuation_risk,provenance_risk,commercial_risk],key=lambda x:risk_rank.get(x,2))
+        st.markdown(f"### Overall: {overall_risk}")
+        st.write(f"**Car / repair:** {mechanical_risk}  ·  **Price confidence:** {valuation_risk}")
+        st.write(f"**History / paperwork:** {provenance_risk}  ·  **Deal safety:** {commercial_risk}")
+        risk_notes=[]
+        if mechanical_risk!="Low": risk_notes.append("Allow for mechanical/prep uncertainty.")
+        if valuation_risk!="Low": risk_notes.append(f"Only {comparable_count} close comparable advert(s), so price confidence is limited.")
+        if provenance_risk!="Low": risk_notes.append("Resolve provenance/V5C uncertainty before buying.")
+        if commercial_risk=="High": risk_notes.append("A modest retail/prep change can wipe out the contribution.")
+        elif commercial_risk=="Medium": risk_notes.append("Commercial headroom is limited.")
+        for risk_note in risk_notes: st.caption("• "+risk_note)
         if mm and recommended_retail:
             delta=asking-recommended_retail
             st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} DG recommended retail." if delta else "Seller asking matches DG recommended retail.")
@@ -1378,14 +1385,19 @@ with tabs[0]:
             if current_prices:
                 current_avg=sum(current_prices)/len(current_prices); current_low=min(current_prices); current_high=max(current_prices)
                 if len(current_prices)==1:
-                    st.metric("Only close comparable",f"£{current_prices[0]:,.0f}")
-                    st.warning("Only 1 close comparable found — insufficient for a reliable market range. DG will not present one advert as a meaningful average/low/high range.")
+                    st.markdown(f"**1 close comparable · £{current_prices[0]:,.0f}**")
+                    st.warning("Market confidence: low — one advert is not enough for a reliable range.")
                 else:
-                    st.metric("Average asking price now",f"£{current_avg:,.0f}")
-                    c1,c2=st.columns(2); c1.metric("Cheapest comparable",f"£{current_low:,.0f}"); c2.metric("Highest comparable",f"£{current_high:,.0f}")
-                    st.caption(f"{len(current_prices)} current comparable adverts · price spread £{current_high-current_low:,.0f}.")
-                    if len(current_prices)>=5: st.success("Useful current sample. Compare this with DG recommended retail above.")
-                    else: st.warning("Small sample. Treat the range and average cautiously.")
+                    st.markdown(f"**{len(current_prices)} close comparables · average £{current_avg:,.0f}**")
+                    st.write(f"Range **£{current_low:,.0f}–£{current_high:,.0f}** · spread **£{current_high-current_low:,.0f}**")
+                    if len(current_prices)>=5:
+                        st.success("Market confidence: useful current sample.")
+                    else:
+                        st.warning("Market confidence: low — small sample. Treat the average and range cautiously.")
+            else:
+                st.warning("No usable comparable prices in the current sample.")
+        else:
+            st.warning("No current comparable adverts available.")
         st.caption("Current adverts only. DG will not draw a historical trend until it has real historical price observations.")
 
         row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}])
