@@ -1931,55 +1931,47 @@ def autoza_mcp_comparables(make,model,year,limit=100):
     return rows[:max(1,int(limit or 100))]
 
 def autoza_public_market_comparables(make,model,limit=100):
-    """Read Autoza's public CC-BY market pages when API/MCP stock calls return no usable rows."""
+    """Extract genuine Autoza public listing observations using price-centred text windows."""
     if not make or not model: return []
     mk=quote(str(make).strip().lower().replace(" ","-"))
     md=quote(str(model).strip().lower().replace(" ","-"))
-    urls=[
-        f"https://autoza.co.uk/cars/{mk}/model/{md}",
-        f"https://autoza.co.uk/?make={quote(str(make).strip())}",
-    ]
-    rows=[]; seen=set()
-    target=_dg_norm(model)
+    urls=[f"https://autoza.co.uk/cars/{mk}/model/{md}",f"https://autoza.co.uk/cars/{mk}"]
+    rows=[]; seen=set(); target=_dg_norm(model)
     for url in urls:
         try:
-            req=Request(url,headers={"User-Agent":"DG-Deal-Finder/65","Accept":"text/html,*/*"})
-            with urlopen(req,timeout=20) as r:
-                raw=r.read().decode("utf-8","ignore")
+            req=Request(url,headers={"User-Agent":"DG-Deal-Finder/66","Accept":"text/html,*/*"})
+            with urlopen(req,timeout=20) as r: raw=r.read().decode("utf-8","ignore")
         except Exception:
             continue
-        # Keep visual separators before stripping markup.
-        text=re.sub(r'(?i)<(?:br|/div|/li|/article|/p|/h\d)>',"\n",raw)
-        text=unescape(re.sub(r'<[^>]+>',' ',text))
+        # preserve card-ish boundaries, then strip HTML
+        raw=re.sub(r'(?i)</(?:article|li|div|p|section|a)>',"\n",raw)
+        text=unescape(re.sub(r'<[^>]+>',' ',raw))
         text=re.sub(r'[ \t]+',' ',text)
-        # Autoza listing cards expose title + year + mileage + fuel + £price in visible text.
-        # Capture a generous line/window and then extract the fields conservatively.
-        chunks=re.split(r'(?=\bCompare\b)',text,re.I)
-        for chunk in chunks:
-            if len(rows)>=limit: break
-            c=" ".join(chunk.split())[:700]
-            if not c or target not in _dg_norm(c): continue
-            pm=re.search(r'£\s*([\d,]{3,})',c)
-            ym=re.search(r'\b((?:19|20)\d{2})\b',c)
-            if not pm or not ym: continue
-            try:
-                price=float(pm.group(1).replace(",","")); year=int(ym.group(1))
+        # Find each visible GBP asking price and inspect surrounding text for this model/year/mileage.
+        for pm in re.finditer(r'£\s*([\d,]{3,})',text):
+            try: price=float(pm.group(1).replace(",",""))
             except Exception: continue
-            if not (500<=price<=250000 and 1970<=year<=datetime.datetime.now().year+1): continue
+            if not 500<=price<=250000: continue
+            lo=max(0,pm.start()-450); hi=min(len(text),pm.end()+450)
+            c=" ".join(text[lo:hi].split())
+            if target not in _dg_norm(c): continue
+            years=[int(x) for x in re.findall(r'\b((?:19|20)\d{2})\b',c)]
+            years=[y for y in years if 1970<=y<=datetime.datetime.now().year+1]
+            if not years: continue
+            # nearest plausible year is sufficient because the window is centred on the listing price
+            year=min(years,key=lambda y:abs(y-datetime.datetime.now().year))
             mm=re.search(r'([\d,]{1,7})\s*miles\b',c,re.I)
             mileage=float(mm.group(1).replace(",","")) if mm else 0
-            fuel=""
-            fm=re.search(r'\b(Petrol|Diesel|Electric|Hybrid|Plug[- ]?in Hybrid|LPG)\b',c,re.I)
-            if fm: fuel=fm.group(1)
-            gearbox=""
-            gm=re.search(r'\b(Manual|Automatic|Auto|PDK|DSG|Tiptronic|CVT)\b',c,re.I)
-            if gm: gearbox=gm.group(1)
-            sid=f"{year}|{int(mileage)}|{int(price)}|{_dg_norm(c[:160])}"
+            fuel=(re.search(r'\b(Petrol|Diesel|Electric|Hybrid|Plug[- ]?in Hybrid|LPG)\b',c,re.I) or [None,""])[1]
+            gearbox=(re.search(r'\b(Manual|Automatic|Auto|PDK|DSG|Tiptronic|CVT)\b',c,re.I) or [None,""])[1]
+            sid=f"{year}|{int(mileage)}|{int(price)}"
             if sid in seen: continue
             seen.add(sid)
-            rows.append({"make":make,"model":model,"year":year,"mileage":mileage,
-                         "price":price,"fuel":fuel,"gearbox":gearbox,
-                         "title":c[:220],"source":"Autoza public market page","source_id":sid})
+            rows.append({"make":make,"model":model,"year":year,"mileage":mileage,"price":price,
+                         "fuel":fuel,"gearbox":gearbox,"title":c[:220],
+                         "source":"Autoza public market page","source_id":sid})
+            if len(rows)>=limit: break
+        if len(rows)>=limit: break
     return rows[:limit]
 
 def autoza_public_model_guide(make,model):
@@ -2004,14 +1996,24 @@ def autoza_public_model_guide(make,model):
     return {}
 
 def robust_market_value(rows, year, mileage, make="", model="", asking=0):
-    """DG valuation: API rows -> MCP rows -> public CC-BY market rows -> DG bank -> guide."""
+    """Merge every free evidence route; unusable rows from one source cannot block another."""
     live=list(rows or [])
-    if not live and make and model:
-        try: live=autoza_mcp_comparables(make,model,year,100)
-        except Exception: live=[]
-    if not live and make and model:
-        try: live=autoza_public_market_comparables(make,model,100)
-        except Exception: live=[]
+    try:
+        live.extend(autoza_mcp_comparables(make,model,year,100) if make and model else [])
+    except Exception: pass
+    try:
+        live.extend(autoza_public_market_comparables(make,model,100) if make and model else [])
+    except Exception: pass
+    # dedupe by source id or core observation
+    dedup=[]; seen=set()
+    for r in live:
+        if not isinstance(r,dict): continue
+        sid=str(r.get("source_id") or r.get("id") or "")
+        if not sid:
+            sid="|".join(str(x) for x in (_num(r,"year"),_num(r,"mileage","miles"),_num(r,"price","asking_price")))
+        if sid in seen: continue
+        seen.add(sid); dedup.append(r)
+    live=dedup
     try: dg_store_market_observations(live,make,model)
     except Exception: pass
     try:
@@ -2022,30 +2024,25 @@ def robust_market_value(rows, year, mileage, make="", model="", asking=0):
                 direct["value"]=v; direct["retail"]=v
                 direct["evidence"]="Current UK comparable asking prices"
                 direct["manual_required"]=False
+                direct["raw_evidence_count"]=len(live)
                 return direct
     except Exception: pass
-
     bank=dg_bank_valuation(make,model,year,mileage)
     if bank.get("value",0)>0: return bank
-
     guide={}
     try: guide=autoza_price_guide(make,model)
-    except Exception: guide={}
+    except Exception: pass
     if not guide:
         try: guide=autoza_public_model_guide(make,model)
-        except Exception: guide={}
+        except Exception: pass
     try: typical=float(guide.get("typical") or 0)
     except Exception: typical=0
-
-    # A whole-model guide can be wildly wrong for an old generation (e.g. 2008 Cayman vs 2018 718).
-    # Only use it directly for cars <=6 years old. Older cars require actual age-relevant observations.
     age=max(0,datetime.datetime.now().year-int(year or datetime.datetime.now().year))
     if typical>250 and age<=6:
-        return {"value":typical,"retail":typical,
-                "low":float(guide.get("low") or typical*.90),
-                "high":float(guide.get("high") or typical*1.10),
-                "count":int(guide.get("count") or 0),"confidence":"Low",
-                "evidence":guide.get("source") or "UK model asking-price guide","manual_required":False}
+        return {"value":typical,"retail":typical,"low":float(guide.get("low") or typical*.90),
+                "high":float(guide.get("high") or typical*1.10),"count":int(guide.get("count") or 0),
+                "confidence":"Low","evidence":guide.get("source") or "UK model asking-price guide",
+                "manual_required":False}
     return {"value":0,"retail":0,"low":0,"high":0,"count":0,"confidence":"None",
             "evidence":"No age-relevant free market evidence yet","manual_required":True}
 
@@ -3006,6 +3003,26 @@ with tabs[0]:
             except Exception:
                 pass
             st.session_state["current_appraisal_ready"]=False
+            with st.expander("VALUATION DEBUG", expanded=True):
+                try:
+                    _dbg_rest=len(comps or []) if "comps" in locals() else 0
+                except Exception: _dbg_rest=0
+                try:
+                    _dbg_mcp=autoza_mcp_comparables(make,model,year,20)
+                except Exception as _e:
+                    _dbg_mcp=[]; st.caption("MCP error: "+str(_e)[:180])
+                try:
+                    _dbg_pub=autoza_public_market_comparables(make,model,20)
+                except Exception as _e:
+                    _dbg_pub=[]; st.caption("Public-page error: "+str(_e)[:180])
+                try:
+                    _dbg_guide=autoza_price_guide(make,model)
+                except Exception as _e:
+                    _dbg_guide={}; st.caption("Guide error: "+str(_e)[:180])
+                st.caption(f"REST rows: {_dbg_rest} • MCP usable rows: {len(_dbg_mcp)} • Public-page rows: {len(_dbg_pub)}")
+                st.caption("Price guide parsed: "+(str(_dbg_guide)[:300] if _dbg_guide else "NO"))
+                if _dbg_pub:
+                    st.caption("Public sample: "+str(_dbg_pub[0])[:350])
             st.stop()
 
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}</div></div>',unsafe_allow_html=True)
