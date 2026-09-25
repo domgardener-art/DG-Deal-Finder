@@ -1128,8 +1128,10 @@ with tabs[0]:
 
         st.markdown('<div class="section">Quick risk check</div>',unsafe_allow_html=True)
         # Component risks are derived here so the UI cannot reference undefined legacy names.
+        # Self-contained component risks: use only values definitely available in this result branch.
         mechanical_risk = "High" if risk=="High" else ("Medium" if risk=="Medium" else "Low")
-        valuation_risk = "High" if comp_count==0 else ("Medium" if comp_count<5 else "Low")
+        comparable_count = int(market.get("count", 0) or 0) if isinstance(market, dict) else 0
+        valuation_risk = "High" if comparable_count==0 else ("Medium" if comparable_count<5 else "Low")
         provenance_risk = "High" if provenance=="Issue found" or v5c=="Missing / mismatch" else ("Medium" if provenance=="Not checked" or v5c=="Not checked" else "Low")
         commercial_risk="Low" if stress_both>=target_margin*0.5 else ("Medium" if stress_both>0 else "High")
         c1,c2=st.columns(2); c1.metric("Car / repair risk",mechanical_risk); c2.metric("Price confidence",valuation_risk)
