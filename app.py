@@ -1656,50 +1656,26 @@ def dg_progressive_valuation(rows, target_year, target_mileage):
     return {}
 
 def robust_market_value(rows, year, mileage, make="", model="", asking=0):
-    """Evidence ladder: individual adverts first, then free aggregate market stats.
-    Never manufactures a £0 valuation."""
-    multi=dg_progressive_valuation(rows,year,mileage)
-    if multi.get("value",0)>0:
-        return {"value":multi["value"],"low":multi["low"],"high":multi["high"],
-                "count":multi["count"],"confidence":multi["confidence"],
-                "evidence":multi["evidence"],"manual_required":False,
-                "signals":multi}
-
-    rows=rows or []
+    """Two-source valuation: real adverts first, model price guide second."""
     try:
-        est=estimate_market_from_comps(rows,year,mileage)
+        direct=estimate_market_from_comps(rows or [],year,mileage)
+        if isinstance(direct,dict) and float(direct.get("value") or 0)>0:
+            direct["evidence"]=direct.get("evidence") or "Live same-model asking prices"
+            direct["manual_required"]=False
+            return direct
     except Exception:
-        est=None
-    value=0.0; low=0.0; high=0.0; count=0
-    if isinstance(est,dict):
-        value=float(est.get("market") or est.get("value") or est.get("average") or est.get("retail") or 0)
-        low=float(est.get("low") or 0); high=float(est.get("high") or 0)
-        count=int(est.get("count") or len(rows) or 0)
-    elif isinstance(est,(int,float)):
-        value=float(est); count=len(rows)
-    elif isinstance(est,(tuple,list)) and est:
-        nums=[x for x in est if isinstance(x,(int,float))]
-        if nums: value=float(nums[0])
-        count=len(rows)
-    if value>0:
-        return {"value":value,"low":low or value,"high":high or value,
-                "count":count,"confidence":"High" if count>=8 else ("Medium" if count>=3 else "Low"),
-                "evidence":"Comparable adverts (target year ±1)","manual_required":False}
-    guide=autoza_price_guide(make,model)
-    if guide.get("typical",0)>250:
-        typical=float(guide["typical"])
-        low=float(guide.get("low") or typical*0.90)
-        high=float(guide.get("high") or typical*1.10)
-        return {"value":typical,"low":low,"high":high,"count":int(guide.get("count",0) or 0),
-                "confidence":"Medium","evidence":"Autoza UK model price guide",
-                "manual_required":False,"signals":{}}
-    stats=autoza_market_stats(make,model)
-    agg=float(stats.get("typical") or 0)
-    if agg>0:
-        return {"value":agg,"low":float(stats.get("low") or agg),"high":float(stats.get("high") or agg),
-                "count":int(stats.get("count") or 0),"confidence":"Medium",
-                "evidence":"Autoza aggregate asking-price guide","manual_required":False}
-    return {"value":0.0,"low":0.0,"high":0.0,"count":0,"confidence":"Insufficient",
+        pass
+    try:
+        guide=autoza_price_guide(make,model)
+        typical=float(guide.get("typical") or 0)
+        if typical>250:
+            return {"value":typical,"low":float(guide.get("low") or typical*.90),
+                    "high":float(guide.get("high") or typical*1.10),
+                    "count":int(guide.get("count") or 0),"confidence":"Medium",
+                    "evidence":"Autoza UK model price guide","manual_required":False}
+    except Exception:
+        pass
+    return {"value":0,"low":0,"high":0,"count":0,"confidence":"None",
             "evidence":"No usable free market evidence","manual_required":True}
 
 def manual_market_override(default=0):
@@ -2628,7 +2604,7 @@ with tabs[0]:
         except Exception:
             _dg_render_market=0.0
         if _dg_render_market <= 0:
-            st.error("NO USABLE MARKET VALUATION — DG has not produced a £0 valuation.")
+            st.error("NO USABLE MARKET VALUATION — no commercial recommendation calculated.")
         try:
             _dg_tools=autoza_mcp_tools()
             _dg_has_guide=any(isinstance(x,dict) and x.get("name")=="get_uk_price_guide" for x in _dg_tools)
