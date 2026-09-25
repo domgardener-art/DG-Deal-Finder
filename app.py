@@ -496,6 +496,61 @@ def dg_structured_issue_matches(make,model,year,engine,fuel,gearbox,mileage=0):
         q["source"]=q.get("source") or "DG structured evidence bank"
         out.append(q)
     return out
+
+DG_BAD_ISSUE_PHRASES=[
+ "years and engines with","common problems","known faults","known problems",
+ "what to look for","things to check","buying guide","common issues",
+ "years affected","engines affected","serious known fault"
+]
+DG_COMPONENT_TERMS=[
+ "bearing","chain","belt","gearbox","transmission","clutch","flywheel","turbo","injector",
+ "pump","thermostat","coolant","radiator","engine","piston","ring","valve","egr","dpf",
+ "adblue","scr","nox","sensor","rack","steering","suspension","bush","spring","damper",
+ "alternator","starter","battery","ecu","mechatronic","actuator","compressor","oil",
+ "water","seal","leak","cylinder","head gasket","timing","ims","bore","scoring"
+]
+DG_FAILURE_TERMS=[
+ "fail","failure","wear","worn","stretch","snap","break","broken","crack","leak","fault",
+ "judder","rattle","overheat","corrosion","consumption","starvation","loss","damage",
+ "seiz","blocked","clog","misfire","slip","noise"
+]
+
+def dg_issue_quality(row):
+    text=" ".join(str(row.get(k,"")) for k in ("issue","ask","check")).lower()
+    issue=str(row.get("issue","")).strip().lower()
+    if not issue or len(issue)<12:return 0
+    if any(p in issue for p in DG_BAD_ISSUE_PHRASES):return 0
+    has_component=any(x in text for x in DG_COMPONENT_TERMS)
+    has_failure=any(x in text for x in DG_FAILURE_TERMS)
+    score=(2 if has_component else 0)+(2 if has_failure else 0)
+    if row.get("source"):score+=1
+    if row.get("year_from") or row.get("engine_terms"):score+=1
+    return score
+
+def dg_clean_issue_rows(rows):
+    good=[]
+    for r in rows or []:
+        if dg_issue_quality(r)<4: continue
+        # Generic auto-generated seller questions are replaced with a direct evidence request.
+        ask=str(r.get("ask","")).strip()
+        issue=str(r.get("issue","")).strip()
+        if (not ask) or ("work relating to" in ask.lower()):
+            component=issue.split(":")[-1].strip()
+            r=dict(r); r["ask"]=f"Has this specific issue been inspected or repaired? If yes, at what mileage and is there an invoice? ({component[:90]})"
+        good.append(r)
+    # Near-duplicate suppression: specific/longer issue wins.
+    good.sort(key=lambda x:(dg_issue_quality(x),len(str(x.get("issue","")))),reverse=True)
+    final=[]
+    for r in good:
+        norm=re.sub(r"[^a-z0-9]+"," ",str(r.get("issue","")).lower()).strip()
+        toks=set(norm.split())
+        duplicate=False
+        for e in final:
+            en=set(re.sub(r"[^a-z0-9]+"," ",str(e.get("issue","")).lower()).split())
+            if toks and en and len(toks&en)/max(1,min(len(toks),len(en)))>=0.75:
+                duplicate=True;break
+        if not duplicate:final.append(r)
+    return final
 @st.cache_data(ttl=86400,show_spinner=False)
 def dg_web_research(make,model,year,engine,fuel,gearbox):
     """Live no-key research with explicit status. Never equates blocked search with 'no issues'."""
@@ -660,7 +715,7 @@ def assess_seller_description(text, confirmed=None):
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V102 bulk intelligence bank")
+st.caption("DG Deal Finder • V103 intelligence quality control")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3799,13 +3854,16 @@ with tabs[0]:
         except Exception as _dg_research_error:
             _dg_research={"status":"research_unavailable","issues":[],"error":type(_dg_research_error).__name__}
         _dg_web_intel=_dg_research.get("issues",[]) if isinstance(_dg_research,dict) else []
+        _dg_web_intel=dg_clean_issue_rows(_dg_web_intel)
+        _dg_bank_intel=dg_clean_issue_rows(_dg_bank_intel)
+        _dg_local_intel=dg_clean_issue_rows(_dg_local_intel)
         _dg_live_intel=_dg_bank_intel+_dg_local_intel+_dg_web_intel
         _seen_now=set()
         _dg_live_intel=[x for x in _dg_live_intel if not ((_dg_norm(x.get("issue","")) in _seen_now) or _seen_now.add(_dg_norm(x.get("issue",""))))]
         _dg_research_status=_dg_research.get("status","research_unavailable") if isinstance(_dg_research,dict) else "research_unavailable"
         _dg_match_level=_dg_research.get("match_level","exact") if isinstance(_dg_research,dict) else "exact"
         try:
-            dg_store_intel(_dg_live_intel)
+            dg_store_intel(dg_clean_issue_rows(_dg_live_intel))
         except Exception:
             pass
         _dg_intel=[]
