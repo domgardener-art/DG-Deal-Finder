@@ -448,7 +448,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V86 resilient buying intelligence")
+st.caption("DG Deal Finder • V87 visible buying intelligence")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3599,10 +3599,16 @@ with tabs[0]:
                 "confidence":_i.get("confidence","Medium")})
             _learn.append(_x)
         dg_store_intel(_learn)
+        st.markdown("### Model buying intelligence")
         if _dg_live_intel:
-            st.caption(f"Live research cross-checked {len(_dg_live_intel)} buying issue(s) and added them to DG's knowledge bank.")
+            st.success(f"Live research cross-checked {len(_dg_live_intel)} buying issue(s) and added them to DG's knowledge bank.")
+        elif _dg_intel:
+            st.info("Using DG's existing sourced buying-intelligence bank for this vehicle.")
+        else:
+            st.info("Live research completed but no model-specific issue passed DG's evidence threshold. No fault has been assumed.")
+            st.markdown("**Questions still worth asking on any used car:**")
+            st.markdown("- What major maintenance or repairs have been done, and are there invoices?\n- Any warning lights, intermittent faults, oil/coolant use or starting issues?\n- When were the gearbox/transmission and other scheduled fluids last serviced?\n- Any recent tyres, brakes, suspension, battery or air-conditioning work?")
         if _dg_intel:
-            st.markdown("### Model buying intelligence")
             st.caption("DG matches this car against its growing sourced buying-intelligence bank. Findings are questions to investigate, not a diagnosis.")
             for _i in _dg_intel:
                 with st.expander(f'{_i["severity"]} · {_i["issue"]}',expanded=True):
