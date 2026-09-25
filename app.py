@@ -356,6 +356,19 @@ DG_CORE_RISK_BANK = [
  {"make":"Honda","models":["Civic","Accord","CR-V"],"fuel":"Diesel","issue":"Clutch/dual-mass flywheel and diesel emissions condition are worthwhile checks","severity":"High","ask":"Any clutch/DMF, EGR or DPF work?","check":"Check clutch bite/slip, DMF noise, smoke and emissions warnings.","cost_low":700,"cost_high":1800},
 ]
 
+
+DG_BROAD_RISK_BANK = [
+ {"makes":["Jaguar","Land Rover"],"fuel":"Diesel","issue":"DPF/EGR and emissions-system faults are common higher-mileage diesel buying checks","severity":"Medium","ask":"Any DPF, EGR, NOx/emissions warnings, forced regenerations or related repairs?","check":"Scan for emissions faults; check smoke, limp mode, regeneration history and invoices.","cost_low":350,"cost_high":1800,"mileage_from":50000},
+ {"makes":["Jaguar","Land Rover"],"fuel":"Diesel","issue":"Turbo, boost-hose and intake-system problems can create expensive diesel faults","severity":"Medium","ask":"Any turbo, boost hose, intercooler or intake repairs?","check":"Check boost delivery, smoke, whistle, oil leaks and stored boost faults.","cost_low":250,"cost_high":2200,"mileage_from":60000},
+ {"makes":["Jaguar","Land Rover"],"fuel":"","issue":"Suspension bushes, arms and wheel-bearing wear are important checks on heavier models","severity":"Medium","ask":"Any recent suspension arm, bush or wheel-bearing work?","check":"Listen for knocks, inspect tyre wear and check for play/noise on road test.","cost_low":250,"cost_high":1200,"mileage_from":50000},
+ {"makes":["Jaguar","Land Rover"],"fuel":"","issue":"Electrical, battery and infotainment faults are worthwhile model-wide checks","severity":"Medium","ask":"Any battery drain, electrical warning, camera, screen or infotainment faults?","check":"Test every electrical function and check battery/charging health.","cost_low":150,"cost_high":1500},
+ {"makes":["BMW","Mercedes-Benz","Audi"],"fuel":"Diesel","issue":"DPF/EGR/NOx emissions hardware is a common diesel buying-risk area","severity":"Medium","ask":"Any DPF, EGR, NOx sensor or emissions repairs?","check":"Check warning lights, regeneration history, smoke and stored faults.","cost_low":350,"cost_high":1800,"mileage_from":60000},
+ {"makes":["BMW","Mercedes-Benz","Audi"],"fuel":"","issue":"Cooling-system leaks and age-related cooling components deserve inspection","severity":"Medium","ask":"Any coolant leaks, water pump, thermostat or overheating work?","check":"Check coolant level, pressure/leaks, temperature stability and invoices.","cost_low":250,"cost_high":1200,"mileage_from":60000},
+ {"makes":["Volkswagen","Audi","Skoda","SEAT"],"fuel":"Diesel","issue":"EGR/DPF emissions faults are common diesel buying checks across the group","severity":"Medium","ask":"Any EGR, DPF, emissions warning or regeneration work?","check":"Check warning lights, smoke, limp mode and service/repair evidence.","cost_low":350,"cost_high":1600,"mileage_from":60000},
+ {"makes":["Peugeot","Citroen","DS"],"fuel":"Diesel","issue":"AdBlue/SCR/NOx-system faults are common BlueHDi buying checks","severity":"High","ask":"Any AdBlue tank, pump, injector, NOx sensor or countdown faults?","check":"Check emissions countdown/warnings and repair invoices.","cost_low":500,"cost_high":1600,"mileage_from":50000},
+ {"makes":["Ford"],"fuel":"Diesel","issue":"DPF/EGR and turbo condition are important higher-mileage diesel checks","severity":"Medium","ask":"Any DPF, EGR, turbo or injector work?","check":"Check smoke, boost, warning lights, regeneration history and invoices.","cost_low":350,"cost_high":1800,"mileage_from":60000},
+ {"makes":["Nissan","Renault"],"fuel":"Diesel","issue":"DPF/EGR and turbo/injector condition are worthwhile diesel buying checks","severity":"Medium","ask":"Any DPF, EGR, turbo or injector repairs?","check":"Check smoke, cold start, boost and emissions warnings.","cost_low":350,"cost_high":1800,"mileage_from":60000},
+]
 def dg_core_risk_matches(make,model,fuel,gearbox):
     mk=str(make or "").strip().lower(); md=str(model or "").strip().lower()
     fu=str(fuel or "").strip().lower(); gb=str(gearbox or "").strip().lower()
@@ -371,7 +384,20 @@ def dg_core_risk_matches(make,model,fuel,gearbox):
                   "source_url":"https://www.caradvertcheck.co.uk/car-data",
                   "evidence_type":"broader model/fuel buying risk — confirm applicability","confidence":"Low"})
         out.append(q)
-    return out
+    for r in DG_BROAD_RISK_BANK:
+        if mk not in [str(x).lower() for x in r.get("makes",[])]: continue
+        if r.get("fuel") and str(r.get("fuel")).lower()!=fu: continue
+        q=dict(r)
+        q.update({"year_from":"","year_to":"","engine_terms":"","source":"DG broader UK buying-risk bank",
+                  "source_url":"","evidence_type":"make/model-family + fuel buying risk — confirm applicability","confidence":"Low"})
+        out.append(q)
+    # de-duplicate issue text
+    seen=set(); clean=[]
+    for q in out:
+        k=str(q.get("issue","")).strip().lower()
+        if k and k not in seen:
+            seen.add(k); clean.append(q)
+    return clean
 
 def dg_model_fault_page(make,model,year,engine,fuel,gearbox):
     """Read a free public UK model-fault page directly; return sourced issues, never guessed faults."""
@@ -493,10 +519,10 @@ def dg_web_research(make,model,year,engine,fuel,gearbox):
           "evidence_type":"live structured web research","confidence":"Medium" if len(matched)>=2 else "Low"})
 
     combined=direct_issues+learned
-    if not combined:
-        combined=dg_core_risk_matches(make,model,fuel,gearbox)
-        if combined:
-            _dg_match_level="model_fuel"
+    _core_risks=dg_core_risk_matches(make,model,fuel,gearbox)
+    combined += _core_risks
+    if _core_risks and not (direct_issues or learned):
+        _dg_match_level="model_fuel"
     seen=set(); final=[]
     for row in combined:
         key=" ".join(str(row.get("issue","")).lower().split())
@@ -589,7 +615,7 @@ def assess_seller_description(text, confirmed=None):
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V96 consolidated bid decision")
+st.caption("DG Deal Finder • V97 fast refresh + broader risks")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -1525,7 +1551,7 @@ def dg_official_uk_vehicle_rows():
 
 def dg_official_vehicle_choices(make,model,year):
     """Return only evidenced UK choices; never invent an engine or derivative."""
-    rows=dg_official_uk_vehicle_rows()
+    rows = dg_official_uk_vehicle_rows() if st.session_state.get("_dg_allow_external_research",False) else None
     if not rows or not make or not model: return [],[],[]
     nm=_dg_norm(make); nd=_dg_norm(model)
     hits=[]
@@ -3351,6 +3377,8 @@ with tabs[0]:
             st.caption("This screens seller wording for risk and contradictions. Seller claims remain unverified; it does not replace inspection, diagnostics or provenance checks.")
         go=st.form_submit_button("ANALYSE DEAL  →",use_container_width=True)
     if go:
+
+        st.session_state["_dg_allow_external_research"]=True
         # Safety gate: never produce a valuation from an engine/year combination that
         # we cannot verify. This prevents a plausible-looking value for the wrong derivative.
         historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
