@@ -327,8 +327,10 @@ def _merge_unique(*groups):
 
 def local_vehicle_choices(make,model):
     d=DG_POWERTRAIN_CATALOG.get((make,model),{})
-    specs=_merge_unique(d.get("specs",[]), UK_TRIMS.get((make,model),[]))
-    return d.get("engines",[]),d.get("fuels",[]),d.get("gearboxes",[]),specs
+    # Do not depend on a separate trim variable: the fallback catalogue is self-contained.
+    # This avoids a NameError if the legacy trim-hint constant changes name.
+    specs=_merge_unique(d.get("specs",[]))
+    return list(d.get("engines",[])),list(d.get("fuels",[])),list(d.get("gearboxes",[])),specs
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def carsxe_choices(make,model,year):
