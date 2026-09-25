@@ -1419,6 +1419,76 @@ def comparable_vehicle_label(car, fallback_make="", fallback_model=""):
             parts.append(x)
     return " ".join(parts) if parts else "Comparable vehicle"
 
+
+def autoza_market_stats(make="", model=""):
+    """Free/no-key aggregate UK asking-price evidence from Autoza."""
+    base="https://autoza.co.uk/api/public/market-stats"
+    params={}
+    if make: params["make"]=str(make).strip()
+    if model: params["model"]=str(model).strip()
+    url=base+("?" + urllib.parse.urlencode(params) if params else "")
+    req=urllib.request.Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/51"})
+    try:
+        with urllib.request.urlopen(req,timeout=8) as r:
+            data=json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return {}
+    # Defensive extraction: provider may use typical/median/average and low/high aliases.
+    root=data.get("data",data) if isinstance(data,dict) else {}
+    if isinstance(root,list) and root: root=root[0]
+    if not isinstance(root,dict): return {}
+    def num(*keys):
+        for k in keys:
+            v=root.get(k)
+            try:
+                if v not in (None,""): return float(v)
+            except: pass
+        return None
+    return {
+        "typical":num("typical","typical_price","median","median_price","average","avg_price"),
+        "low":num("low","lowest","min","min_price","lowest_price"),
+        "high":num("high","highest","max","max_price","highest_price"),
+        "count":int(num("count","listing_count","total","vehicles") or 0),
+        "source":"Autoza market stats"
+    }
+
+def robust_market_value(rows, year, mileage, make="", model="", asking=0):
+    """Evidence ladder: individual adverts first, then free aggregate market stats.
+    Never manufactures a £0 valuation."""
+    rows=rows or []
+    try:
+        est=estimate_market_from_comps(rows,year,mileage)
+    except Exception:
+        est=None
+    value=0.0; low=0.0; high=0.0; count=0
+    if isinstance(est,dict):
+        value=float(est.get("market") or est.get("value") or est.get("average") or est.get("retail") or 0)
+        low=float(est.get("low") or 0); high=float(est.get("high") or 0)
+        count=int(est.get("count") or len(rows) or 0)
+    elif isinstance(est,(int,float)):
+        value=float(est); count=len(rows)
+    elif isinstance(est,(tuple,list)) and est:
+        nums=[x for x in est if isinstance(x,(int,float))]
+        if nums: value=float(nums[0])
+        count=len(rows)
+    if value>0:
+        return {"value":value,"low":low or value,"high":high or value,
+                "count":count,"confidence":"High" if count>=8 else ("Medium" if count>=3 else "Low"),
+                "evidence":"Comparable adverts","manual_required":False}
+    stats=autoza_market_stats(make,model)
+    agg=float(stats.get("typical") or 0)
+    if agg>0:
+        return {"value":agg,"low":float(stats.get("low") or agg),"high":float(stats.get("high") or agg),
+                "count":int(stats.get("count") or 0),"confidence":"Medium",
+                "evidence":"Autoza aggregate asking-price guide","manual_required":False}
+    return {"value":0.0,"low":0.0,"high":0.0,"count":0,"confidence":"Insufficient",
+            "evidence":"No usable free market evidence","manual_required":True}
+
+def manual_market_override(default=0):
+    return st.number_input("Manual retail estimate (£)",min_value=0,max_value=250000,
+                           value=int(default or 0),step=100,
+                           help="Use only when free market sources cannot produce a defensible value.")
+
 def estimate_market_from_comps(rows, year, mileage):
     """Average current asking price from relevant for-sale listings.
     Filters obvious mismatches, then uses year/mileage proximity. No sold-price claim."""
@@ -1555,109 +1625,6 @@ def vehicle_label_from_dvla(d):
     bits=[d.get("yearOfManufacture"), d.get("make")]
     # DVLA VES does not reliably return model/derivative; don't invent it.
     return " ".join(str(x) for x in bits if x not in (None,""))
-
-def _norm_make_name(value):
-    x=str(value or "").strip()
-    aliases={"MERCEDES":"Mercedes-Benz","MERCEDES-BENZ":"Mercedes-Benz",
-             "VOLKSWAGEN":"Volkswagen","LAND ROVER":"Land Rover",
-             "ALFA ROMEO":"Alfa Romeo","ASTON MARTIN":"Aston Martin"}
-    return aliases.get(x.upper(),x.title() if x.isupper() else x)
-
-def _year_from_date(value):
-    m=re.search(r"\b(19|20)\d{2}\b",str(value or ""))
-    return int(m.group(0)) if m else None
-
-def normalise_identity_payload(data, source):
-    """Extract only identity fields actually present in an official/provider response."""
-    if not isinstance(data,dict): return {}
-    make=_pick(data,"make","manufacturer","marque")
-    model=_pick(data,"model","modelName","model_name")
-    year=_pick(data,"yearOfManufacture","manufactureYear","year","registrationYear")
-    if not year:
-        year=_year_from_date(_pick(data,"firstRegistrationDate","registrationDate","firstUsedDate"))
-    try: year=int(year) if year else None
-    except: year=None
-    engine_cc=_pick(data,"engineCapacity","engineSize","engineCc","engineCC")
-    try: engine_cc=int(float(engine_cc)) if engine_cc not in (None,"") else None
-    except: engine_cc=None
-    fuel=_pick(data,"fuelType","fuel","primaryFuelType")
-    return {"source":source,"make":_norm_make_name(make),"model":str(model or "").strip(),
-            "year":year,"engine_cc":engine_cc,"fuel":str(fuel or "").strip().title()}
-
-def merge_vehicle_identity(evidence):
-    """Consensus-first merge. Conflicts are surfaced; they are never silently overwritten."""
-    rows=[x for x in evidence if isinstance(x,dict) and any(x.get(k) for k in ("make","model","year","engine_cc","fuel"))]
-    result={"make":"","model":"","year":None,"engine_cc":None,"fuel":"","sources":[],"conflicts":[]}
-    for field in ("make","model","year","engine_cc","fuel"):
-        vals=[]
-        for r in rows:
-            v=r.get(field)
-            if v not in (None,""):
-                vals.append((str(v).lower() if isinstance(v,str) else v,v,r.get("source","source")))
-        if vals:
-            # prefer the most frequently corroborated value; first source breaks ties
-            counts={}
-            for key,val,src in vals: counts[key]=counts.get(key,0)+1
-            best=max(counts,key=lambda k:counts[k])
-            result[field]=next(val for key,val,src in vals if key==best)
-            distinct=[]
-            for key,val,src in vals:
-                if key not in [x[0] for x in distinct]: distinct.append((key,val,src))
-            if len(distinct)>1:
-                result["conflicts"].append(field+": "+", ".join(f"{src}={val}" for key,val,src in distinct))
-    result["sources"]=[r.get("source","source") for r in rows]
-    result["confidence"]="High" if len(result["sources"])>=2 and not result["conflicts"] else ("Medium" if result["sources"] else "Unverified")
-    return result
-
-
-def uk_registration_year_hint(reg):
-    """Decode the age identifier on standard GB registrations issued since Sep 2001.
-    This is a year hint only: cherished/private/NI/older registrations may not encode age."""
-    vrm=re.sub(r"[^A-Za-z0-9]","",reg or "").upper()
-    if len(vrm)!=7 or not (vrm[:2].isalpha() and vrm[2:4].isdigit() and vrm[4:].isalpha()):
-        return None
-    age=int(vrm[2:4])
-    if 1 <= age <= 49:       # March-August: 01=2001 ... 49=2049
-        return 2000+age
-    if 51 <= age <= 99:      # September-February: 51=2001 ... 99=2049
-        return 1950+age
-    return None
-
-def registration_provider_status():
-    dvla=bool(str(_secret("DVLA_API_KEY","")).strip())
-    try:
-        cfg=st.secrets
-        dvsa=all(cfg.get(k) for k in ["DVSA_CLIENT_ID","DVSA_CLIENT_SECRET","DVSA_TOKEN_URL","DVSA_SCOPE","DVSA_API_KEY"])
-    except Exception:
-        dvsa=False
-    return {"DVLA":dvla,"DVSA MOT":dvsa,"Auto Trader":at_configured()}
-
-def identify_registration(reg, mileage=0):
-    """Best-effort registration-first identity. Missing credentials never break manual appraisal."""
-    vrm=re.sub(r"[^A-Za-z0-9]","",reg or "").upper()
-    evidence=[]; errors=[]
-    if not vrm: return {"vrm":"","identity":merge_vehicle_identity([]),"evidence":[],"errors":[]}
-    try:
-        evidence.append(normalise_identity_payload(dvla_lookup(vrm),"DVLA"))
-    except Exception as e:
-        errors.append("DVLA unavailable")
-    try:
-        mot=dvsa_mot_lookup(vrm)
-        if mot.get("configured") and isinstance(mot.get("data"),dict):
-            evidence.append(normalise_identity_payload(mot["data"],"DVSA MOT"))
-    except Exception:
-        errors.append("DVSA MOT unavailable")
-    if at_configured():
-        try:
-            evidence.append(normalise_identity_payload(fetch_at_vehicle(vrm,int(mileage or 0)),"Auto Trader"))
-        except Exception:
-            errors.append("Auto Trader unavailable")
-    identity=merge_vehicle_identity(evidence)
-    year_hint=uk_registration_year_hint(vrm)
-    if not identity.get("year") and year_hint:
-        identity["year"]=year_hint
-        identity["year_hint_only"]=True
-    return {"vrm":vrm,"identity":identity,"evidence":evidence,"errors":errors,"year_hint":year_hint}
 
 def market_summary(comps):
     if not comps: return None
@@ -1840,60 +1807,14 @@ tabs=st.tabs(["APPRAISAL","SAVED APPRAISALS","MARKET","SETTINGS"])
 
 with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG buying desk</div><div class="hero">Appraise a vehicle</div><div class="sub">Vehicle, market, condition and deal risk — one buying decision.</div></div>',unsafe_allow_html=True)
-    st.markdown('<div class="section">Identify vehicle</div>',unsafe_allow_html=True)
-    st.caption("Registration first gives DG the best chance of identifying the actual car. Manual selection remains available when a provider is unavailable.")
-    c1,c2=st.columns([2,1])
-    lookup_reg=c1.text_input("Registration lookup",value=st.session_state.get("imp_reg",""),placeholder="e.g. CV60 ZLZ",key="vrm_identity_input")
-    lookup_mileage=c2.number_input("Mileage",0,300000,int(st.session_state.get("imp_mileage",0)),1000,key="vrm_identity_mileage")
-    provider_state=registration_provider_status()
-    if not any(provider_state.values()):
-        st.caption("Registration lookup: offline fallback active. DG can decode the standard UK registration year; exact make/model/engine still need confirmation.")
-    if st.button("IDENTIFY VEHICLE",use_container_width=True,key="identify_vehicle_btn"):
-        with st.spinner("Checking vehicle identity…"):
-            result=identify_registration(lookup_reg,lookup_mileage)
-        st.session_state["registration_identity"]=result
-        st.session_state["imp_reg"]=result.get("vrm","")
-        st.session_state["imp_mileage"]=int(lookup_mileage or 0)
-        ident=result.get("identity",{})
-        if ident.get("make"): st.session_state["identity_make"]=ident["make"]
-        if ident.get("model"): st.session_state["identity_model"]=ident["model"]
-        if ident.get("year"): st.session_state["identity_year"]=int(ident["year"])
-        if ident.get("fuel"): st.session_state["identity_fuel"]=ident["fuel"]
-        if ident.get("engine_cc"): st.session_state["identity_engine_cc"]=int(ident["engine_cc"])
-    identity_result=st.session_state.get("registration_identity") or {}
-    identity=identity_result.get("identity") or {}
-    if identity_result:
-        if identity.get("sources"):
-            label=" · ".join(str(x) for x in [identity.get("year"),identity.get("make"),identity.get("model"),(str(identity.get("engine_cc"))+"cc" if identity.get("engine_cc") else ""),identity.get("fuel")] if x)
-            if identity.get("confidence")=="High": st.success("IDENTITY CONFIDENCE: HIGH — "+label)
-            else: st.info("IDENTITY CONFIDENCE: "+identity.get("confidence","Medium").upper()+" — "+label)
-            st.caption("Evidence: "+" + ".join(identity.get("sources",[])))
-            if identity.get("conflicts"):
-                st.warning("Provider conflict: "+"; ".join(identity["conflicts"])+". Confirm the vehicle before buying.")
-        else:
-            year_hint=identity_result.get("year_hint")
-            providers=registration_provider_status()
-            connected=[k for k,v in providers.items() if v]
-            if year_hint:
-                st.info(f"REGISTRATION YEAR HINT: {year_hint} — decoded from the UK age identifier. Make/model/engine are not guessed; confirm them below.")
-                st.session_state["identity_year"]=int(year_hint)
-            if not connected:
-                st.caption("Live registration lookup is not connected on this deployment, so DG is using the registration only for a safe year hint and keeping manual vehicle confirmation available.")
-            else:
-                st.warning("Connected lookup did not return an identity for this registration. DG has not guessed the make/model/engine.")
-
-    st.markdown('<div class="section">Confirm vehicle</div>',unsafe_allow_html=True)
+    st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
+    st.caption("Choose make, year and model. DG uses its cached official UK catalogue first, with live/API data only as enrichment.")
     official_catalogue,official_catalogue_error=load_official_uk_catalogue()
     catalogue_makes=official_uk_makes(official_catalogue)
     make_options=_merge_unique(UK_MAKES,catalogue_makes)
     a,b=st.columns(2)
-    identity_make=st.session_state.get("identity_make","")
-    make_index=([""]+make_options).index(identity_make) if identity_make in make_options else 0
-    selected_make=a.selectbox("Make",[""]+make_options,index=make_index)
-    year_options=list(range(2026,1995,-1))
-    identity_year=st.session_state.get("identity_year")
-    year_index=year_options.index(identity_year) if identity_year in year_options else 16
-    selected_year=b.selectbox("Year",year_options,index=year_index)
+    selected_make=a.selectbox("Make",[""]+make_options)
+    selected_year=b.selectbox("Year",list(range(2026,1995,-1)),index=16)
     models=[]
     if selected_make:
         try:
@@ -1904,10 +1825,7 @@ with tabs[0]:
                 models=_merge_unique(models,["911","Cayman","Boxster","Macan","Cayenne","Panamera","Taycan"])
         except Exception:
             models=free_models_for_make_year(selected_make,selected_year)
-    identity_model=st.session_state.get("identity_model","")
-    model_values=["— Choose model —"]+models
-    model_index=model_values.index(identity_model) if identity_model in model_values else 0
-    selected_model=st.selectbox("Model",model_values,index=model_index,disabled=not bool(selected_make))
+    selected_model=st.selectbox("Model",["— Choose model —"]+models,disabled=not bool(selected_make))
     with st.expander("Model missing from the list?"):
         manual_model=st.text_input("Manual model",placeholder="Only use this when the actual model is missing, e.g. Octavia")
         if manual_model.strip():
@@ -2373,6 +2291,23 @@ with tabs[0]:
                     cohort,tier_counts=build_comparable_cohort(
                         comps,selected_engine,selected_fuel,selected_gearbox,selected_spec,30)
                     fresh_market=estimate_market_from_comps(cohort or comps,selected_year,mileage)
+                    # V51 free valuation rescue: never turn missing evidence into a £0 recommendation.
+                    try:
+                        _dg_existing_value=float(market_estimate.get("market",0) if isinstance(market_estimate,dict) else (market_estimate or 0))
+                    except Exception:
+                        _dg_existing_value=0.0
+                    if _dg_existing_value <= 0:
+                        _dg_rescue=robust_market_value(comps, selected_year, mileage, selected_make, selected_model, asking)
+                        if _dg_rescue["value"] > 0:
+                            market_estimate={"market":_dg_rescue["value"],"low":_dg_rescue["low"],"high":_dg_rescue["high"],"count":_dg_rescue["count"]}
+                            st.info(f'Market rescue used: {_dg_rescue["evidence"]} · confidence {_dg_rescue["confidence"]}')
+                        else:
+                            st.warning("FREE MARKET DATA INSUFFICIENT — enter your own realistic retail estimate below. DG will still calculate the deal.")
+                            _manual_retail=manual_market_override(int(asking or 0))
+                            if _manual_retail > 0:
+                                market_estimate={"market":float(_manual_retail),"low":float(_manual_retail),"high":float(_manual_retail),"count":0}
+                                st.caption("Manual retail estimate — not presented as market-derived evidence.")
+
                     if fresh_market:
                         fresh_market["selector_match_count"]=len(exact)
                         fresh_market["source_count"]=len(comps)
@@ -2457,9 +2392,7 @@ with tabs[0]:
         contribution_at_ask=recommended_retail-(asking+prep+fees+detected_repair_cost+effective_mot_history_cost+contingency)
         roi_at_ask=(contribution_at_ask/(asking+prep+fees+detected_repair_cost+contingency)*100) if (asking+prep+fees+detected_repair_cost+contingency)>0 else 0
 
-        identity_now=(st.session_state.get("registration_identity") or {}).get("identity") or {}
-        identity_tag=f' · Identity {identity_now.get("confidence","Unverified")}' if reg else ""
-        st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}{identity_tag}</div></div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}</div></div>',unsafe_allow_html=True)
         st.markdown(f"""<div class="card" style="border:2px solid #111827">
         <div class="label">WHAT TO DO</div>
         <div class="meta">Open at</div><div class="car">{opening_offer_display}</div>
