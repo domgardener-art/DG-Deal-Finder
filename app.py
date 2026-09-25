@@ -196,14 +196,48 @@ def metric_pct(v):
 
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+UK_MODEL_CATALOGUE={
+"Abarth":["124 Spider","500","595","695"],
+"Alfa Romeo":["Giulia","Giulietta","MiTo","Stelvio","Tonale"],
+"Audi":["A1","A3","A4","A5","A6","A7","A8","Q2","Q3","Q5","Q7","Q8","TT"],
+"BMW":["1 Series","2 Series","3 Series","4 Series","5 Series","6 Series","7 Series","8 Series","X1","X2","X3","X4","X5","X6","X7","Z4","i3","i4","iX"],
+"Citroen":["Berlingo","C1","C2","C3","C3 Aircross","C4","C4 Cactus","C5","C5 Aircross","DS3"],
+"Cupra":["Ateca","Born","Formentor","Leon","Tavascan"],
+"Dacia":["Duster","Jogger","Logan","Sandero"],
+"Fiat":["124 Spider","500","500L","500X","Bravo","Panda","Punto","Tipo"],
+"Ford":["B-Max","C-Max","EcoSport","Edge","Fiesta","Focus","Galaxy","Grand C-Max","Ka","Ka+","Kuga","Mondeo","Mustang","Puma","Ranger","S-Max","Tourneo Connect","Transit Connect"],
+"Honda":["Accord","Civic","CR-V","HR-V","Jazz"],
+"Hyundai":["i10","i20","i30","i40","IONIQ","IONIQ 5","Kona","Santa Fe","Tucson"],
+"Jaguar":["E-Pace","F-Pace","F-Type","I-Pace","XE","XF","XJ","XK"],
+"Jeep":["Avenger","Cherokee","Compass","Grand Cherokee","Renegade","Wrangler"],
+"Kia":["Ceed","Niro","Optima","Picanto","ProCeed","Rio","Sorento","Soul","Sportage","Stinger","Stonic","XCeed"],
+"Land Rover":["Defender","Discovery","Discovery Sport","Freelander","Range Rover","Range Rover Evoque","Range Rover Sport","Range Rover Velar"],
+"Lexus":["CT","ES","GS","IS","LC","LS","NX","RC","RX","UX"],
+"Mazda":["2","3","6","CX-3","CX-30","CX-5","MX-5"],
+"Mercedes-Benz":["A-Class","B-Class","C-Class","CLA","CLS","E-Class","GLA","GLB","GLC","GLE","GLS","S-Class","SL","SLK"],
+"MG":["3","4","5","GS","HS","MG ZS","ZS EV"],
+"MINI":["Clubman","Convertible","Countryman","Hatch"],
+"Mitsubishi":["ASX","Eclipse Cross","L200","Mirage","Outlander","Shogun"],
+"Nissan":["Juke","Leaf","Micra","Note","Pathfinder","Pulsar","Qashqai","X-Trail"],
+"Peugeot":["107","108","2008","207","208","3008","308","5008","508","RCZ"],
+"Porsche":["718 Boxster","718 Cayman","911","Cayenne","Macan","Panamera","Taycan"],
+"Renault":["Captur","Clio","Kadjar","Koleos","Megane","Scenic","Twingo","Zoe"],
+"SEAT":["Alhambra","Arona","Ateca","Ibiza","Leon","Mii","Tarraco"],
+"Skoda":["Citigo","Fabia","Kamiq","Karoq","Kodiaq","Octavia","Rapid","Scala","Superb","Yeti"],
+"Smart":["ForFour","ForTwo"],
+"Subaru":["BRZ","Forester","Impreza","Legacy","Outback","XV"],
+"Suzuki":["Alto","Baleno","Celerio","Ignis","Jimny","S-Cross","Swift","Vitara"],
+"Tesla":["Model 3","Model S","Model X","Model Y"],
+"Toyota":["Auris","Aygo","C-HR","Corolla","GT86","Prius","RAV4","Supra","Yaris","Yaris Cross"],
+"Vauxhall":["Adam","Astra","Corsa","Crossland","Grandland","Insignia","Meriva","Mokka","Viva","Zafira"],
+"Volkswagen":["Arteon","Beetle","Caddy","Golf","ID.3","ID.4","Passat","Polo","Scirocco","Sharan","T-Cross","T-Roc","Tiguan","Touareg","Touran","Up"],
+"Volvo":["C30","C40","S40","S60","S80","S90","V40","V50","V60","V70","V90","XC40","XC60","XC70","XC90"]
+}
+
 def free_models_for_make_year(make, year):
-    make_q=quote(str(make).strip())
-    url=f"https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/{make_q}/modelyear/{int(year)}?format=json"
-    req=urllib.request.Request(url,headers={"User-Agent":"DG-Deal-Finder/1.0"})
-    with urllib.request.urlopen(req,timeout=15) as r:
-        data=json.loads(r.read().decode())
-    return sorted({str(x.get("Model_Name","")).strip() for x in data.get("Results",[]) if x.get("Model_Name")})
+    # Embedded catalogue makes the selector reliable on Streamlit and avoids
+    # a network call every time a user changes the dropdown.
+    return UK_MODEL_CATALOGUE.get(make, [])
 
 UK_MAKES=["Abarth","Alfa Romeo","Audi","BMW","Citroen","Cupra","Dacia","DS","Fiat","Ford","Honda","Hyundai","Jaguar","Jeep","Kia","Land Rover","Lexus","Mazda","Mercedes-Benz","MG","MINI","Mitsubishi","Nissan","Peugeot","Porsche","Renault","SEAT","Skoda","Smart","Subaru","Suzuki","Tesla","Toyota","Vauxhall","Volkswagen","Volvo"]
 COMMON_UK_SPECS={
@@ -419,7 +453,7 @@ tabs=st.tabs(["SOURCE","MARKET","DEALS","RULES"])
 with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Stock appraisal</div><div class="hero">Is it worth buying?</div><div class="sub">Appraise a car against your target margin before you message the seller.</div></div>',unsafe_allow_html=True)
     st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
-    st.caption("Free constrained selector: each choice filters the next so you cannot mistype the make/model combination.")
+    st.caption("Choose make, year and model from built-in lists. Model options update instantly — no API key required.")
     a,b=st.columns(2)
     selected_make=a.selectbox("Make",[""]+UK_MAKES)
     selected_year=b.selectbox("Year",list(range(2026,1995,-1)),index=16)
@@ -428,8 +462,9 @@ with tabs[0]:
         try:
             models=free_models_for_make_year(selected_make,selected_year)
         except Exception:
-            st.warning("Free model catalogue is temporarily unavailable. Try again in a moment.")
-    selected_model=st.selectbox("Model",[""]+models,disabled=not bool(models))
+            models=[]
+    selected_model=st.selectbox("Model",["— Choose model —"]+models,disabled=not bool(selected_make))
+    if selected_model=="— Choose model —": selected_model=""
     specs=COMMON_UK_SPECS.get((selected_make,selected_model),[])
     if specs:
         selected_spec=st.selectbox("Trim / spec",[""]+specs)
