@@ -301,7 +301,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V76 canonical valuation flow")
+st.caption("DG Deal Finder • V79 official UK catalogue enrichment")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -1220,6 +1220,70 @@ def marketcheck_choices(make,model,year):
             engines.append(f"{n:.1f}L")
         except: engines.append(x)
     return _merge_unique(engines),_merge_unique(terms("fuel_type")),_merge_unique(terms("transmission")),_merge_unique(terms("variant"))
+
+
+
+@st.cache_data(ttl=86400,show_spinner=False)
+def dg_official_uk_vehicle_rows():
+    """Latest DfT/DVLA first-registration catalogue: detailed model, fuel, engine band and registration-year columns."""
+    url="https://assets.publishing.service.gov.uk/media/69ef3ecf9ca985145673b9ec/df_VEH0270.csv"
+    try:
+        req=Request(url,headers={"User-Agent":"DG-Deal-Finder/1.0","Accept":"text/csv"})
+        with urlopen(req,timeout=18) as resp:
+            text=resp.read().decode("utf-8-sig","replace")
+        return list(csv.DictReader(io.StringIO(text)))
+    except Exception:
+        return []
+
+def dg_official_vehicle_choices(make,model,year):
+    """Return only evidenced UK choices; never invent an engine or derivative."""
+    rows=dg_official_uk_vehicle_rows()
+    if not rows or not make or not model: return [],[],[]
+    nm=_dg_norm(make); nd=_dg_norm(model)
+    hits=[]
+    for r in rows:
+        mk=_dg_norm(r.get("Make","")); gm=_dg_norm(r.get("GenModel","")); detail=str(r.get("Model","") or "").strip()
+        if mk!=nm: continue
+        # Match the selected generic model to DfT generic model, allowing make prefix.
+        gm2=gm
+        if gm2.startswith(nm+" "): gm2=gm2[len(nm)+1:]
+        if gm2!=nd and nd not in gm2: continue
+        # VEH0270 year columns are counts of first registrations. Require evidence in target year where available.
+        if year:
+            y=str(int(year))
+            ycols=[k for k in r if y in str(k)]
+            if ycols:
+                def active(v):
+                    t=str(v or "").strip().lower().replace(",","")
+                    if t in ("","0","[x]","[z]"): return False
+                    if t=="[c]": return True
+                    try:return float(t)>0
+                    except:return False
+                if not any(active(r.get(k)) for k in ycols): continue
+        hits.append(r)
+    fuels=[]; engines=[]; specs=[]
+    for r in hits:
+        f=str(r.get("Fuel","") or "").strip()
+        e=str(r.get("EngineSizeDesc","") or "").strip()
+        d=str(r.get("Model","") or "").strip()
+        if f and f not in fuels: fuels.append(f)
+        if e and e not in engines: engines.append(e)
+        if d and d not in specs: specs.append(d)
+    return engines,fuels,specs
+
+def dg_catalogue_coverage(make,model):
+    """Describe bundled-bank completeness so thin placeholder rows never masquerade as verified data."""
+    try:
+        p=Path(__file__).with_name("dg_vehicle_bank.csv")
+        if not p.exists(): return {"rows":0,"year":False,"fuel":False,"engine":False,"gearbox":False,"spec":False,"thin":True}
+        with p.open("r",encoding="utf-8-sig",newline="") as f:
+            rr=[r for r in csv.DictReader(f) if _dg_norm(r.get("make",""))==_dg_norm(make) and _dg_norm(r.get("model",""))==_dg_norm(model)]
+        has=lambda k:any(str(r.get(k,"") or "").strip() for r in rr)
+        return {"rows":len(rr),"year":has("year"),"fuel":has("fuel"),"engine":has("engine"),
+                "gearbox":has("gearbox"),"spec":has("spec"),
+                "thin":not (has("fuel") and has("engine") and has("spec"))}
+    except Exception:
+        return {"rows":0,"year":False,"fuel":False,"engine":False,"gearbox":False,"spec":False,"thin":True}
 
 def robust_vehicle_choices(make,model,year,rows):
     # Current adverts first, then optional structured APIs, then safe local fallback.
@@ -2587,14 +2651,33 @@ with tabs[0]:
     fuels=_merge_unique(fuels,dg_fuels)
     gearboxes=_merge_unique(gearboxes,dg_gearboxes)
     derivatives=_merge_unique(derivatives,dg_specs)
+    # V79: fill thin bundled records from current official DfT/DVLA UK registration data.
+    _gov_engines,_gov_fuels,_gov_specs=dg_official_vehicle_choices(selected_make,selected_model,selected_year)
+    engines=_merge_unique(_gov_engines,engines)
+    fuels=_merge_unique(_gov_fuels,fuels)
+    derivatives=_merge_unique(_gov_specs,derivatives)
+    # V77 gap closer: common models must not dead-end just because the bundled
+    # bank lacks an exact-year row. Fall back to all known rows for that model.
+    if selected_make and selected_model:
+        _all_engines,_all_fuels,_all_gearboxes,_all_specs=local_vehicle_choices(selected_make,selected_model,None)
+        if not engines: engines=_merge_unique(engines,_all_engines)
+        if not fuels: fuels=_merge_unique(fuels,_all_fuels)
+        if not gearboxes: gearboxes=_merge_unique(gearboxes,_all_gearboxes)
+        if not derivatives: derivatives=_merge_unique(derivatives,_all_specs)
+        _dg_cov=dg_catalogue_coverage(selected_make,selected_model)
+    else:
+        _dg_cov={"thin":False}
+    # Never block appraisal because taxonomy is incomplete. These are user choices,
+    # not claims that every powertrain existed for the selected model/year.
+    if selected_make and selected_model and not fuels:
+        fuels=["Petrol","Diesel","Hybrid","Plug-in Hybrid","Electric"]
+    if selected_make and selected_model and not gearboxes:
+        gearboxes=["Manual","Automatic"]
 
     taxonomy_verified=bool(taxonomy)
     official_catalogue_loaded=not official_catalogue.empty
     if not official_catalogue_loaded:
         st.caption("Using DG bundled UK vehicle catalogue. Live catalogue enrichment is temporarily unavailable.")
-        if st.button("RETRY UK VEHICLE CATALOGUE",key="retry_official_catalogue",use_container_width=True):
-            _download_official_uk_catalogue.clear()
-            st.rerun()
 
     # Fuel first: this immediately removes petrol/diesel/hybrid/EV derivatives and engines
     # that cannot belong to the selected fuel type for the exact chosen year.
@@ -2604,6 +2687,8 @@ with tabs[0]:
     else:
         fuel_options=fuels
     fuel_index=1 if len(fuel_options)==1 else 0
+    if selected_make and selected_model and _dg_cov.get("thin"):
+        st.caption("DG has partial catalogue detail for this model. Appraisal remains available; exact spec/engine can be entered manually.")
     selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,index=fuel_index,disabled=not bool(selected_model))
     if selected_fuel.startswith("—"): selected_fuel=""
 
