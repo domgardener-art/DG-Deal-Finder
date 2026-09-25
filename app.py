@@ -961,7 +961,7 @@ with tabs[0]:
 - **History:** MOT mileage progression, service invoices, timing-belt/chain evidence where relevant, recalls/campaigns where applicable.
 - **Condition:** cold start, warning lights, clutch/gearbox, cooling system, brakes, tyres, suspension, leaks, air-con and electrics.
 - **Body:** panel gaps, paint mismatch, corrosion, glass, wheels/tyres and evidence of structural repair.
-- **Commercial:** V5C present, keys, finance/write-off/theft provenance check, realistic prep, warranty/fees, transport and desired contribution.
+- **Commercial:** V5C present, keys, finance/write-off/theft provenance check, realistic prep, other buying costs, transport and desired contribution.
 - **Exit:** compare against the 10 closest cars and price to sell, not merely to advertise.
 """)
     with st.form("appraise"):
@@ -969,7 +969,7 @@ with tabs[0]:
         vehicle=st.text_input("Vehicle",value=st.session_state.get("imp_vehicle",""),placeholder="Make, model and derivative")
         a,b=st.columns(2); mileage=a.number_input("Mileage",0,300000,int(st.session_state.get("imp_mileage",0)),1000); asking=b.number_input("Seller asking (£)",0,100000,int(st.session_state.get("imp_asking",0)),50)
         a,b=st.columns(2); retail=a.number_input("Retail estimate (£)",0,150000,int(st.session_state.get("market_retail",0)),50,help="Auto-filled from live market data; editable."); prep=b.number_input("Prep budget (£)",0,20000,400,50)
-        a,b=st.columns(2); fees=a.number_input("Fees / warranty (£)",0,10000,250,25); risk="Medium"
+        a,b=st.columns(2); fees=a.number_input("Other buying costs (£)",0,10000,250,25); risk="Medium"
         target_margin=st.number_input("Desired contribution / margin (£)",0,20000,int(st.session_state.min_profit),50,help="Your target gross contribution before fixed overhead and tax.")
         c1,c2=st.columns(2)
         service_history=c1.selectbox("Service history",["Unknown","Full","Part","None"])
@@ -1099,7 +1099,7 @@ with tabs[0]:
         st.markdown("**How DG got to the maximum buy**")
         st.write(f"Recommended retail: **£{recommended_retail:,.0f}**")
         st.write(f"Prep: **−£{prep:,.0f}**")
-        st.write(f"Fees / warranty: **−£{fees:,.0f}**")
+        st.write(f"Other buying costs: **−£{fees:,.0f}**")
         st.write(f"Contingency: **−£{contingency:,.0f}**")
         st.write(f"Required contribution: **−£{target_margin:,.0f}**")
         st.write(f"**Maximum buy: £{max_buy:,.0f}**")
@@ -1127,6 +1127,10 @@ with tabs[0]:
         else: st.success(f"If BOTH happen, about £{stress_both:,.0f} remains. Safety margin is healthy.")
 
         st.markdown('<div class="section">Quick risk check</div>',unsafe_allow_html=True)
+        # Component risks are derived here so the UI cannot reference undefined legacy names.
+        mechanical_risk = "High" if risk=="High" else ("Medium" if risk=="Medium" else "Low")
+        valuation_risk = "High" if comp_count==0 else ("Medium" if comp_count<5 else "Low")
+        provenance_risk = "High" if provenance=="Issue found" or v5c=="Missing / mismatch" else ("Medium" if provenance=="Not checked" or v5c=="Not checked" else "Low")
         commercial_risk="Low" if stress_both>=target_margin*0.5 else ("Medium" if stress_both>0 else "High")
         c1,c2=st.columns(2); c1.metric("Car / repair risk",mechanical_risk); c2.metric("Price confidence",valuation_risk)
         c1,c2=st.columns(2); c1.metric("History / paperwork",provenance_risk); c2.metric("Deal safety",commercial_risk)
