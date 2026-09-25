@@ -373,13 +373,17 @@ DG_BROAD_RISK_BANK = [
  {"makes":["Toyota","Lexus"],"fuel":"Hybrid","issue":"Hybrid battery health and cooling-system condition should be verified","severity":"Medium","ask":"Any hybrid battery repairs or health checks?","check":"Check hybrid warnings, battery cooling intake and available health-check history.","cost_low":300,"cost_high":2500,"mileage_from":80000},
 ]
 def dg_core_risk_matches(make,model,fuel,gearbox):
-    mk=str(make or "").strip().lower(); md=str(model or "").strip().lower()
-    fu=str(fuel or "").strip().lower(); gb=str(gearbox or "").strip().lower()
+    import unicodedata as _ud
+    def _key(v):
+        v=_ud.normalize("NFKD",str(v or "")).encode("ascii","ignore").decode().lower()
+        return re.sub(r"[^a-z0-9]+","",v)
+    mk=_key(make); md=str(model or "").strip().lower()
+    fu=_key(fuel); gb=str(gearbox or "").strip().lower()
     out=[]
     for r in DG_CORE_RISK_BANK:
-        if str(r["make"]).lower()!=mk: continue
+        if _key(r["make"])!=mk: continue
         if not any(x.lower()==md or x.lower() in md or md in x.lower() for x in r["models"]): continue
-        if r.get("fuel") and str(r["fuel"]).lower()!=fu: continue
+        if r.get("fuel") and _key(r["fuel"])!=fu: continue
         terms=[str(x).lower() for x in r.get("gearbox_terms",[])]
         if terms and not any(t in gb for t in terms): continue
         q=dict(r)
@@ -388,8 +392,8 @@ def dg_core_risk_matches(make,model,fuel,gearbox):
                   "evidence_type":"broader model/fuel buying risk — confirm applicability","confidence":"Low"})
         out.append(q)
     for r in DG_BROAD_RISK_BANK:
-        if mk not in [str(x).lower() for x in r.get("makes",[])]: continue
-        if r.get("fuel") and str(r.get("fuel")).lower()!=fu: continue
+        if mk not in [_key(x) for x in r.get("makes",[])]: continue
+        if r.get("fuel") and _key(r.get("fuel"))!=fu: continue
         q=dict(r)
         q.update({"year_from":"","year_to":"","engine_terms":"","source":"DG broader UK buying-risk bank",
                   "source_url":"","evidence_type":"broader make/model-family + fuel risk — confirm applicability","confidence":"Low"})
@@ -412,7 +416,7 @@ def dg_model_fault_page(make,model,year,engine,fuel,gearbox):
     url=f"https://www.caradvertcheck.co.uk/problems/{slug(make)}/{slug(model)}"
     try:
         req=Request(url,headers={"User-Agent":"Mozilla/5.0 DG-Deal-Finder/1.0","Accept":"text/html"})
-        with urlopen(req,timeout=5) as resp:
+        with urlopen(req,timeout=4) as resp:
             raw=resp.read().decode("utf-8","replace")
     except Exception:
         return {"status":"unavailable","issues":[],"url":url}
@@ -453,6 +457,45 @@ def dg_model_fault_page(make,model,year,engine,fuel,gearbox):
         if len(issues)>=6: break
     return {"status":"found" if issues else "insufficient","issues":issues,"url":url}
 
+DG_ISSUE_BANK=Path(__file__).with_name("dg_issue_bank.csv")
+
+@st.cache_data(show_spinner=False)
+def dg_load_issue_bank():
+    try:
+        import csv
+        with DG_ISSUE_BANK.open("r",encoding="utf-8-sig",newline="") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+def dg_structured_issue_matches(make,model,year,engine,fuel,gearbox,mileage=0):
+    import unicodedata as _ud
+    def key(v):
+        return re.sub(r"[^a-z0-9]+","",_ud.normalize("NFKD",str(v or "")).encode("ascii","ignore").decode().lower())
+    mk,md,fu,gb=key(make),key(model),key(fuel),key(gearbox)
+    hay=key(" ".join(map(str,[engine,gearbox])))
+    out=[]
+    for r in dg_load_issue_bank():
+        if key(r.get("make"))!=mk: continue
+        rm=r.get("model","")
+        if rm not in ("","*") and key(rm) not in md and md not in key(rm): continue
+        rf=key(r.get("fuel"))
+        if rf and rf!=fu: continue
+        try:
+            y=int(year or 0); y0=int(float(r.get("year_from") or 0)); y1=int(float(r.get("year_to") or 9999))
+            if y and not (y0<=y<=y1): continue
+        except Exception: pass
+        terms=[key(x) for x in str(r.get("engine_terms","")).split("|") if x.strip()]
+        if terms and hay and not any(t in hay for t in terms): continue
+        gterms=[key(x) for x in str(r.get("gearbox_terms","")).split("|") if x.strip()]
+        if gterms and gb and not any(t in gb for t in gterms): continue
+        q=dict(r)
+        for k in ("cost_low","cost_high","mileage_from","mileage_to"):
+            try:q[k]=float(q.get(k) or 0)
+            except:q[k]=0
+        q["source"]=q.get("source") or "DG structured evidence bank"
+        out.append(q)
+    return out
 @st.cache_data(ttl=86400,show_spinner=False)
 def dg_web_research(make,model,year,engine,fuel,gearbox):
     """Live no-key research with explicit status. Never equates blocked search with 'no issues'."""
@@ -492,7 +535,7 @@ def dg_web_research(make,model,year,engine,fuel,gearbox):
         try:
             url="https://api.duckduckgo.com/?q="+_q(vehicle+suffix)+"&format=json&no_html=1&skip_disambig=1"
             req=Request(url,headers={"User-Agent":"DG-Deal-Finder/1.0","Accept":"application/json"})
-            with urlopen(req,timeout=5) as resp:
+            with urlopen(req,timeout=4) as resp:
                 data=_json.loads(resp.read().decode("utf-8","replace")); transport_ok=True
             for k in ("AbstractText","Answer","Definition"):
                 if data.get(k): texts.append(str(data[k]))
@@ -617,7 +660,7 @@ def assess_seller_description(text, confirmed=None):
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V98 local-first stable intelligence")
+st.caption("DG Deal Finder • V102 bulk intelligence bank")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -879,7 +922,7 @@ def at_request(path, params=None, method="GET", body=None):
     if isinstance(extra,dict): headers.update({str(k):str(v) for k,v in extra.items()})
     data=json.dumps(body).encode() if body is not None else None
     req=urllib.request.Request(url,data=data,headers=headers,method=method)
-    with urllib.request.urlopen(req,timeout=5) as r:
+    with urllib.request.urlopen(req,timeout=4) as r:
         return json.loads(r.read().decode())
 
 def _find_num(obj, names):
@@ -1296,7 +1339,7 @@ def fleetbyte_variants(make,model,year):
     def get(path,params=None):
         q=("?"+urlencode(params)) if params else ""
         req=Request(FLEETBYTE_BASE+path+q,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
-        with urlopen(req,timeout=5) as r:
+        with urlopen(req,timeout=4) as r:
             return json.loads(r.read().decode("utf-8"))
 
     makes=get("/v1/makes",{"search":make,"pageSize":100}).get("items",[])
@@ -1948,7 +1991,7 @@ def autoza_market_stats(make="", model=""):
     url="https://autoza.co.uk/api/public/market-stats"
     try:
         req=Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
-        with urlopen(req,timeout=5) as resp:
+        with urlopen(req,timeout=4) as resp:
             payload=json.loads(resp.read().decode("utf-8"))
         wanted=str(make or "").strip().lower()
         for row in (payload.get("pricesByMake") or []):
@@ -2798,7 +2841,7 @@ def import_public_listing(url):
         "User-Agent":"Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36",
         "Accept-Language":"en-GB,en;q=0.9"
     })
-    with urllib.request.urlopen(req,timeout=5) as r:
+    with urllib.request.urlopen(req,timeout=4) as r:
         final_url=r.geturl()
         raw=r.read(1500000).decode("utf-8","ignore")
     text=html.unescape(re.sub(r"<[^>]+>"," ",raw))
@@ -3742,11 +3785,23 @@ with tabs[0]:
                         st.caption(f"{tier} · Asking £{price:,.0f}" + (f" · {int(miles):,} miles" if miles else ""))
         st.caption("DG prioritises exact matches, then progressively uses the closest same-model evidence when the exact derivative market is thin. Asking prices are not achieved sale prices.")
 
+        # V100: structured evidence bank first. Web research is enrichment, never a dependency.
+        try:
+            _dg_bank_intel=dg_structured_issue_matches(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox,mileage) or []
+        except Exception:
+            _dg_bank_intel=[]
+        try:
+            _dg_local_intel=dg_core_risk_matches(selected_make,selected_model,selected_fuel,selected_gearbox) or []
+        except Exception:
+            _dg_local_intel=[]
         try:
             _dg_research=dg_web_research(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
         except Exception as _dg_research_error:
             _dg_research={"status":"research_unavailable","issues":[],"error":type(_dg_research_error).__name__}
-        _dg_live_intel=_dg_research.get("issues",[]) if isinstance(_dg_research,dict) else []
+        _dg_web_intel=_dg_research.get("issues",[]) if isinstance(_dg_research,dict) else []
+        _dg_live_intel=_dg_bank_intel+_dg_local_intel+_dg_web_intel
+        _seen_now=set()
+        _dg_live_intel=[x for x in _dg_live_intel if not ((_dg_norm(x.get("issue","")) in _seen_now) or _seen_now.add(_dg_norm(x.get("issue",""))))]
         _dg_research_status=_dg_research.get("status","research_unavailable") if isinstance(_dg_research,dict) else "research_unavailable"
         _dg_match_level=_dg_research.get("match_level","exact") if isinstance(_dg_research,dict) else "exact"
         try:
@@ -3782,11 +3837,17 @@ with tabs[0]:
         dg_store_intel(_learn)
         st.markdown('<div class="dg-section">3 · Buying risks</div>',unsafe_allow_html=True)
         st.markdown('<div class="dg-sub">Known model problems first. High-severity items are shown before lower-risk checks.</div>',unsafe_allow_html=True)
+        if any(str(x.get("severity","")).title()=="High" for x in _dg_live_intel):
+            st.warning("Model-risk flag: HIGH to verify before buying — known risk, not a confirmed fault on this car.")
+        elif any(str(x.get("severity","")).title()=="Medium" for x in _dg_live_intel):
+            st.info("Model-risk flag: MEDIUM to verify before buying.")
         _status_label=_dg_research_status.replace("_"," ").title()
         _match_text={"exact":"Exact vehicle","model_fuel":"Model + fuel type","model":"Model-level"}.get(_dg_match_level,"Exact vehicle")
         with st.expander("Research details"):
+            st.caption("DG combines its structured issue bank with live research. Safety recalls still need confirmation against the official recall service / registration where available.")
             st.markdown(f"**Status:** {_status_label}  \n**Coverage:** {_match_text}  \n**Findings:** {len(_dg_live_intel)}")
-        if _dg_live_intel: st.success(f"DG found and cross-checked {len(_dg_live_intel)} model-specific buying issue(s).")
+        if _dg_live_intel:
+            st.success(f"DG found {len(_dg_live_intel)} relevant buying issue(s). Evidence bank: {len(_dg_bank_intel)} · live research: {len(_dg_web_intel)}.")
         elif _dg_intel: st.info("Using DG’s existing sourced buying-intelligence bank.")
         elif _dg_research_status=="research_unavailable": st.warning("Live research was unavailable. DG has not treated that as no known issues.")
         else: st.info("No verified exact match. DG is still showing broader model/fuel evidence where available.")
@@ -3797,12 +3858,16 @@ with tabs[0]:
                 import html as _html
                 _sev=str(_i.get("severity","Medium")).title(); _cls=_sev.lower() if _sev in ("High","Medium","Low") else "medium"
                 _issue=_html.escape(str(_i.get("issue","Known issue"))); _ask=_html.escape(str(_i.get("ask","Ask for evidence of relevant maintenance or repair work."))); _check=_html.escape(str(_i.get("check","Inspect and verify before buying."))); _source=_html.escape(str(_i.get("source","Sourced model intelligence")))
+                _etype=str(_i.get("evidence_type",""))
+                _is_general=("general inspection risk" in _etype.lower())
+                if _is_general and _sev=="High": _sev="Medium"
+                _badge=("GENERAL BUYING CHECK" if _is_general else "KNOWN / SOURCED ISSUE")
                 _lo=float(_i.get("cost_low",0) or 0); _hi=float(_i.get("cost_high",0) or 0); _mid=round(((_lo+_hi)/2)/50)*50 if (_lo or _hi) else 0
                 _cost=(f"£{_lo:,.0f}–£{_hi:,.0f}" if _hi else "Cost not verified"); _plan=(f" · DG allowance £{_mid:,.0f}" if _mid else "")
                 _mfrom=int(_i.get("mileage_from",0) or 0); _mnote=_html.escape(str(_i.get("mileage_note","") or "")); _current_miles=int(mileage or 0); _mileage_line=""
                 if _mfrom:
                     _mileage_line=(f'<div class="dg-row"><b>Mileage relevance</b><br>This car is at {_current_miles:,} miles. DG holds this risk as more relevant from about {_mfrom:,} miles. {_mnote}</div>')
-                _card=f'<div class="dg-intel-card {_cls}"><div><span class="dg-pill {_cls}">{_sev.upper()}</span><span class="dg-issue">{_issue}</span></div><div class="dg-row"><b>Ask seller</b><br>{_ask}</div><div class="dg-row"><b>Check before buying</b><br>{_check}</div>{_mileage_line}<div class="dg-cost">Likely work: {_cost}{_plan}</div><div class="dg-row" style="font-size:.8rem;color:#667085">Source: {_source}</div></div>' 
+                _card=f'<div class="dg-intel-card {_cls}"><div><span class="dg-pill {_cls}">{_sev.upper()}</span><span class="dg-issue">{_issue}</span></div><div class="dg-row"><b>Ask seller</b><br>{_ask}</div><div class="dg-row"><b>Check before buying</b><br>{_check}</div>{_mileage_line}<div class="dg-row"><b>Evidence</b><br><strong>{_badge}</strong> · {_source} · {_html.escape(str(_i.get("confidence","Low")))} confidence</div><div class="dg-cost">Likely work: {_cost}{_plan}</div><div class="dg-row" style="font-size:.8rem;color:#667085">Source: {_source}</div></div>' 
                 st.markdown(_card,unsafe_allow_html=True)
             _dg_cost_lows=[float(x.get("cost_low",0) or 0) for x in _dg_intel]; _dg_cost_highs=[float(x.get("cost_high",0) or 0) for x in _dg_intel]
             _dg_total_low=sum(_dg_cost_lows); _dg_total_high=sum(_dg_cost_highs); _dg_planning=round((sum((a+b)/2 for a,b in zip(_dg_cost_lows,_dg_cost_highs)))/50)*50
