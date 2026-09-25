@@ -523,7 +523,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V89 broad model fault research")
+st.caption("DG Deal Finder • V90 research visibility guard")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3648,10 +3648,16 @@ with tabs[0]:
                         st.caption(f"{tier} · Asking £{price:,.0f}" + (f" · {int(miles):,} miles" if miles else ""))
         st.caption("DG prioritises exact matches, then progressively uses the closest same-model evidence when the exact derivative market is thin. Asking prices are not achieved sale prices.")
 
-        _dg_research=dg_web_research(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
+        try:
+            _dg_research=dg_web_research(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
+        except Exception as _dg_research_error:
+            _dg_research={"status":"research_unavailable","issues":[],"error":type(_dg_research_error).__name__}
         _dg_live_intel=_dg_research.get("issues",[]) if isinstance(_dg_research,dict) else []
         _dg_research_status=_dg_research.get("status","research_unavailable") if isinstance(_dg_research,dict) else "research_unavailable"
-        dg_store_intel(_dg_live_intel)
+        try:
+            dg_store_intel(_dg_live_intel)
+        except Exception:
+            pass
         _dg_intel=[]
         # Legacy starter rules are optional; the live/learned engine must never crash if absent.
         _dg_legacy=globals().get("dg_buying_intelligence")
@@ -3660,7 +3666,10 @@ with tabs[0]:
                 _dg_intel=_dg_legacy(selected_make,selected_model,selected_year,selected_engine,selected_fuel,desc) or []
             except Exception:
                 _dg_intel=[]
-        _dg_intel+=dg_bank_buying_intelligence(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
+        try:
+            _dg_intel+=dg_bank_buying_intelligence(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
+        except Exception:
+            pass
         # Include newly researched findings immediately; dedupe by issue.
         _dg_intel+=_dg_live_intel
         _seen_issue=set()
@@ -3677,6 +3686,7 @@ with tabs[0]:
             _learn.append(_x)
         dg_store_intel(_learn)
         st.markdown("### Model buying intelligence")
+        st.caption(f"Research status: {_dg_research_status.replace('_',' ').title()} · live findings: {len(_dg_live_intel)} · saved matches: {max(0,len(_dg_intel)-len(_dg_live_intel))}")
         if _dg_live_intel:
             st.success(f"Live research cross-checked {len(_dg_live_intel)} buying issue(s) and added them to DG's knowledge bank.")
         elif _dg_intel:
