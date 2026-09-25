@@ -1115,11 +1115,17 @@ with tabs[0]:
 
     market=st.session_state.get("market_estimate")
     if market:
-        c1,c2,c3=st.columns(3)
-        c1.metric("Est. retail",f'£{st.session_state.get("market_retail",0):,.0f}')
-        c2.metric("Comparable low",f'£{market["low"]:,.0f}')
-        c3.metric("Comparable high",f'£{market["high"]:,.0f}')
-        st.caption(f'{market.get("source","Live UK market data")}. Asking price is not the same as achieved sale price.')
+        market_count=int(market.get("count",0) or 0)
+        st.metric("Est. retail",f'£{st.session_state.get("market_retail",0):,.0f}')
+        if market_count>=2:
+            c1,c2=st.columns(2)
+            c1.metric("Comparable low",f'£{market["low"]:,.0f}')
+            c2.metric("Comparable high",f'£{market["high"]:,.0f}')
+            st.caption(f'{market_count} close current asking-price comparables. Asking price is not the same as achieved sale price.')
+        elif market_count==1:
+            st.caption(f'Based on 1 close current asking-price comparable at £{market["low"]:,.0f}. DG will not present a low/high range from one advert.')
+        else:
+            st.caption("No usable close comparable count returned. Treat the estimate cautiously.")
         chosen_bits=[x for x in [market.get("engine"),market.get("fuel"),market.get("gearbox"),market.get("spec")] if x]
         if chosen_bits: st.caption("Filtered toward: "+" · ".join(chosen_bits)+f' · {market.get("selector_match_count",0)} matching advert(s) before closest-car ranking.')
         if market.get("count",0)<5:
@@ -1362,12 +1368,13 @@ with tabs[0]:
         commercial_risk="Low" if stress_both>=target_margin*0.5 else ("Medium" if stress_both>0 else "High")
         risk_rank={"Low":1,"Medium":2,"High":3}
         overall_risk=max([mechanical_risk,valuation_risk,provenance_risk,commercial_risk],key=lambda x:risk_rank.get(x,2))
-        st.markdown(f"### Overall: {overall_risk}")
-        st.write(f"**Car / repair:** {mechanical_risk}  ·  **Price confidence:** {valuation_risk}")
-        st.write(f"**History / paperwork:** {provenance_risk}  ·  **Deal safety:** {commercial_risk}")
+        st.markdown(f"### Overall buying risk: {overall_risk}")
+        st.caption("Low = safer evidence/headroom · High = more caution required.")
+        st.write(f"**Car / repair risk:** {mechanical_risk}  ·  **Valuation risk:** {valuation_risk}")
+        st.write(f"**History / paperwork risk:** {provenance_risk}  ·  **Deal risk:** {commercial_risk}")
         risk_notes=[]
         if mechanical_risk!="Low": risk_notes.append("Allow for mechanical/prep uncertainty.")
-        if valuation_risk!="Low": risk_notes.append(f"Only {comparable_count} close comparable advert(s), so price confidence is limited.")
+        if valuation_risk!="Low": risk_notes.append(f"Only {comparable_count} close comparable advert(s), so valuation confidence is limited.")
         if provenance_risk!="Low": risk_notes.append("Resolve provenance/V5C uncertainty before buying.")
         if commercial_risk=="High": risk_notes.append("A modest retail/prep change can wipe out the contribution.")
         elif commercial_risk=="Medium": risk_notes.append("Commercial headroom is limited.")
@@ -1376,29 +1383,15 @@ with tabs[0]:
             delta=asking-recommended_retail
             st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} DG recommended retail." if delta else "Seller asking matches DG recommended retail.")
 
-        st.markdown('<div class="section">Current market picture</div>',unsafe_allow_html=True)
-        if mm and mm.get("rows"):
-            current_prices=[]
-            for car in mm.get("rows",[]):
-                pr=_num(car,"price","asking_price","askingPrice")
-                if pr: current_prices.append(float(pr))
-            if current_prices:
-                current_avg=sum(current_prices)/len(current_prices); current_low=min(current_prices); current_high=max(current_prices)
-                if len(current_prices)==1:
-                    st.markdown(f"**1 close comparable · £{current_prices[0]:,.0f}**")
-                    st.warning("Market confidence: low — one advert is not enough for a reliable range.")
-                else:
-                    st.markdown(f"**{len(current_prices)} close comparables · average £{current_avg:,.0f}**")
-                    st.write(f"Range **£{current_low:,.0f}–£{current_high:,.0f}** · spread **£{current_high-current_low:,.0f}**")
-                    if len(current_prices)>=5:
-                        st.success("Market confidence: useful current sample.")
-                    else:
-                        st.warning("Market confidence: low — small sample. Treat the average and range cautiously.")
-            else:
-                st.warning("No usable comparable prices in the current sample.")
+        st.markdown('<div class="section">Market evidence</div>',unsafe_allow_html=True)
+        comparable_count=int(market.get("count",0) or 0)
+        if comparable_count<=1:
+            st.warning("Thin market evidence: only 1 close comparable. Treat the retail estimate as provisional and inspect the advert below.")
+        elif comparable_count<5:
+            st.warning(f"Limited market evidence: {comparable_count} close comparables. Useful as a guide, but not a strong market sample.")
         else:
-            st.warning("No current comparable adverts available.")
-        st.caption("Current adverts only. DG will not draw a historical trend until it has real historical price observations.")
+            st.success(f"Market evidence: {comparable_count} close comparables gives a more useful current asking-price sample.")
+        st.caption("DG uses current asking-price adverts here. It will only show historical price/stock trends once real observations have been saved over time.")
 
         row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}])
         if DATA.exists(): row=pd.concat([pd.read_csv(DATA),row],ignore_index=True)
