@@ -3,6 +3,7 @@ from urllib.parse import quote
 from io import BytesIO
 from urllib.request import Request, urlopen
 import streamlit as st
+import io
 import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -11,6 +12,8 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import re
+import statistics
+import datetime
 import html
 import base64
 import mimetypes
@@ -1655,28 +1658,249 @@ def dg_progressive_valuation(rows, target_year, target_mileage):
         return c
     return {}
 
-def robust_market_value(rows, year, mileage, make="", model="", asking=0):
-    """Two-source valuation: real adverts first, model price guide second."""
+
+
+DG_FULL_UK_BANK_PATH=Path(__file__).with_name("dg_full_uk_vehicle_bank.csv")
+
+DG_ENGINE_BANK_PATH=Path(__file__).with_name("dg_engine_bank.csv")
+DG_ENGINE_BANK_URL="https://raw.githubusercontent.com/gor3a/vehicle-makes-models/main/data/csv/engines.csv"
+
+def dg_build_engine_bank(force=False):
+    """Build supplementary generation/engine bank from the open ODbL vehicle-makes-models dataset."""
+    if DG_ENGINE_BANK_PATH.exists() and not force:
+        try:
+            d=pd.read_csv(DG_ENGINE_BANK_PATH,low_memory=False)
+            if len(d)>10000: return d
+        except Exception: pass
+    raw=_dg_http_csv(DG_ENGINE_BANK_URL)
+    wanted=[
+        "make","model","generation","gen_year_start","gen_year_end","body_type",
+        "engine_label","fuel_type","cylinders","displacement_cc","power_hp","torque_nm",
+        "transmission","drivetrain","zero_to_100_s","top_speed_kmh",
+        "fuel_economy_combined_l100","curb_weight_kg"
+    ]
+    keep=[c for c in wanted if c in raw.columns]
+    d=raw[keep].copy()
+    for c in wanted:
+        if c not in d.columns: d[c]=""
+    d["make"]=d["make"].astype(str).str.strip()
+    d["model"]=d["model"].astype(str).str.strip()
+    d["generation"]=d["generation"].astype(str).str.strip()
+    d["engine_label"]=d["engine_label"].astype(str).str.strip()
+    d=d[(d["make"]!="")&(d["model"]!="")&(d["engine_label"]!="")]
+    d["source"]="vehicle-makes-models / ODbL 1.0"
+    d=d[wanted+["source"]].drop_duplicates()
+    d.to_csv(DG_ENGINE_BANK_PATH,index=False)
+    return d
+
+@st.cache_data(show_spinner=False)
+def dg_engine_bank_lookup(make="",model="",year=0):
+    if not DG_ENGINE_BANK_PATH.exists(): return pd.DataFrame()
     try:
-        direct=estimate_market_from_comps(rows or [],year,mileage)
-        if isinstance(direct,dict) and float(direct.get("value") or 0)>0:
-            direct["evidence"]=direct.get("evidence") or "Live same-model asking prices"
-            direct["manual_required"]=False
-            return direct
+        d=pd.read_csv(DG_ENGINE_BANK_PATH,low_memory=False)
+        if make: d=d[d["make"].astype(str).str.casefold()==str(make).casefold()]
+        if model: d=d[d["model"].astype(str).str.casefold()==str(model).casefold()]
+        if year:
+            ys=pd.to_numeric(d["gen_year_start"],errors="coerce")
+            ye=pd.to_numeric(d["gen_year_end"],errors="coerce").fillna(9999)
+            d=d[(ys<=int(year))&(ye>=int(year))]
+        return d.head(5000)
+    except Exception:
+        return pd.DataFrame()
+
+def dg_engine_options(make,model,year):
+    """Return sourced engine/spec options for the selected make/model/year."""
+    d=dg_engine_bank_lookup(make,model,year)
+    if d.empty: return []
+    out=[]
+    for _,r in d.iterrows():
+        out.append({
+            "generation":str(r.get("generation","") or ""),
+            "engine":str(r.get("engine_label","") or ""),
+            "fuel":str(r.get("fuel_type","") or ""),
+            "cc":r.get("displacement_cc",""),
+            "cylinders":r.get("cylinders",""),
+            "bhp":r.get("power_hp",""),
+            "torque_nm":r.get("torque_nm",""),
+            "gearbox":str(r.get("transmission","") or ""),
+            "drivetrain":str(r.get("drivetrain","") or ""),
+            "source":"vehicle-makes-models / ODbL 1.0",
+        })
+    return out
+
+
+DG_DFT_SOURCES={
+    "age_am":"https://assets.publishing.service.gov.uk/media/69ef3c3a20a498c16734afd1/df_VEH0124_AM.csv",
+    "age_nz":"https://assets.publishing.service.gov.uk/media/69ef3c8520a498c16734afd2/df_VEH0124_NZ.csv",
+    "engine":"https://assets.publishing.service.gov.uk/media/69ef3ea808ecdb5c6f34afad/df_VEH0220.csv",
+}
+
+def _dg_http_csv(url):
+    req=Request(url,headers={"User-Agent":"DG-Deal-Finder/62","Accept":"text/csv,*/*"})
+    with urlopen(req,timeout=60) as r:
+        return pd.read_csv(io.BytesIO(r.read()),low_memory=False)
+
+def dg_build_full_uk_vehicle_bank(force=False):
+    if DG_FULL_UK_BANK_PATH.exists() and not force:
+        try:
+            cached=pd.read_csv(DG_FULL_UK_BANK_PATH,low_memory=False)
+            if len(cached)>10000: return cached
+        except Exception: pass
+    age_parts=[]
+    for key in ("age_am","age_nz"):
+        d=_dg_http_csv(DG_DFT_SOURCES[key])
+        keep=[c for c in ["BodyType","Make","GenModel","Model","YearFirstUsed","YearManufacture","LicenceStatus"] if c in d.columns]
+        d=d[keep]
+        if "BodyType" in d: d=d[d["BodyType"].astype(str).str.lower().eq("cars")]
+        if "LicenceStatus" in d: d=d[d["LicenceStatus"].astype(str).str.lower().eq("licensed")]
+        age_parts.append(d)
+    age=pd.concat(age_parts,ignore_index=True).drop_duplicates()
+    eng=_dg_http_csv(DG_DFT_SOURCES["engine"])
+    keep=[c for c in ["BodyType","Make","GenModel","Model","Fuel","EngineSizeSimple","EngineSizeDesc","LicenceStatus"] if c in eng.columns]
+    eng=eng[keep]
+    if "BodyType" in eng: eng=eng[eng["BodyType"].astype(str).str.lower().eq("cars")]
+    if "LicenceStatus" in eng: eng=eng[eng["LicenceStatus"].astype(str).str.lower().eq("licensed")]
+    eng=eng.drop_duplicates()
+    join=[c for c in ["Make","GenModel","Model"] if c in age.columns and c in eng.columns]
+    full=age.merge(eng.drop(columns=[c for c in ["BodyType","LicenceStatus"] if c in eng.columns]),on=join,how="left")
+    full["year"]=pd.to_numeric(full.get("YearFirstUsed"),errors="coerce")
+    full["year"]=full["year"].fillna(pd.to_numeric(full.get("YearManufacture"),errors="coerce"))
+    full=full[(full["year"]>=1970)&(full["year"]<=datetime.datetime.now().year+1)]
+    full["year"]=full["year"].astype(int)
+    full["make"]=full["Make"].astype(str).str.strip().str.title()
+    full["model"]=full["GenModel"].astype(str).str.strip()
+    full["spec"]=full["Model"].astype(str).str.strip()
+    full["fuel"]=full["Fuel"].astype(str).str.strip() if "Fuel" in full else ""
+    full["engine_cc"]=pd.to_numeric(full["EngineSizeSimple"],errors="coerce") if "EngineSizeSimple" in full else None
+    full["engine_band"]=full["EngineSizeDesc"].astype(str).str.strip() if "EngineSizeDesc" in full else ""
+    full["source"]="DfT/DVLA vehicle licensing statistics"
+    out=full[["make","model","year","spec","fuel","engine_cc","engine_band","source"]].drop_duplicates()
+    out.to_csv(DG_FULL_UK_BANK_PATH,index=False)
+    return out
+
+def dg_vehicle_bank_status():
+    result={"seed_rows":0,"official_rows":0,"makes":0}
+    try:
+        d=pd.read_csv(DG_VEHICLE_BANK_PATH,low_memory=False)
+        result["seed_rows"]=len(d); result["makes"]=d["make"].nunique()
+    except Exception: pass
+    try:
+        d=pd.read_csv(DG_FULL_UK_BANK_PATH,low_memory=False)
+        result["official_rows"]=len(d); result["makes"]=max(result["makes"],d["make"].nunique())
+    except Exception: pass
+    return result
+
+@st.cache_data(show_spinner=False)
+def dg_official_bank_lookup(make="",model="",year=0):
+    if not DG_FULL_UK_BANK_PATH.exists(): return pd.DataFrame()
+    try:
+        d=pd.read_csv(DG_FULL_UK_BANK_PATH,low_memory=False)
+        if make: d=d[d["make"].astype(str).str.casefold()==str(make).casefold()]
+        if model: d=d[d["model"].astype(str).str.casefold()==str(model).casefold()]
+        if year: d=d[pd.to_numeric(d["year"],errors="coerce")==int(year)]
+        return d.head(5000)
+    except Exception: return pd.DataFrame()
+
+DG_VEHICLE_BANK_PATH=Path(__file__).with_name("dg_vehicle_bank.csv")
+DG_MARKET_BANK_PATH=Path(__file__).with_name("dg_market_bank.csv")
+
+def _dg_norm(x):
+    return re.sub(r"[^a-z0-9]+"," ",str(x or "").lower()).strip()
+
+def dg_store_market_observations(rows, make="", model=""):
+    """Save genuine priced adverts so DG remembers market evidence."""
+    if not rows: return 0
+    existing=set()
+    if DG_MARKET_BANK_PATH.exists():
+        try:
+            old=pd.read_csv(DG_MARKET_BANK_PATH)
+            for _,r in old.iterrows():
+                existing.add(str(r.get("source_id","")))
+        except Exception: pass
+    saved=[]
+    now=datetime.datetime.utcnow().replace(microsecond=0).isoformat()+"Z"
+    for car in rows:
+        if not isinstance(car,dict): continue
+        price=_num(car,"price","asking_price","askingPrice")
+        year=_num(car,"year","registration_year","registrationYear")
+        mileage=_num(car,"mileage","miles","odometer")
+        if not price or price<500 or price>250000 or not year: continue
+        sid=str(_pick(car,"id","vehicle_id","stock_id","url","advert_url","link") or "")
+        if not sid:
+            sid="|".join([_dg_norm(make),_dg_norm(model),str(int(year)),str(int(mileage or 0)),str(int(price))])
+        if sid in existing: continue
+        saved.append({"captured_at":now,"make":make or _text(car,"make","manufacturer"),
+                      "model":model or _text(car,"model","model_name"),
+                      "year":int(year),"mileage":int(mileage or 0),"price":float(price),
+                      "engine":extract_engine(car),"fuel":extract_fuel(car),
+                      "gearbox":extract_gearbox(car),"spec":extract_derivative(car),"source_id":sid})
+        existing.add(sid)
+    if not saved: return 0
+    pd.DataFrame(saved).to_csv(DG_MARKET_BANK_PATH,mode="a",header=not DG_MARKET_BANK_PATH.exists() or DG_MARKET_BANK_PATH.stat().st_size==0,index=False)
+    return len(saved)
+
+def dg_bank_valuation(make, model, year, mileage):
+    """Value from DG's remembered genuine asking-price observations."""
+    if not DG_MARKET_BANK_PATH.exists(): return {}
+    try: df=pd.read_csv(DG_MARKET_BANK_PATH)
+    except Exception: return {}
+    if df.empty: return {}
+    mk=_dg_norm(make); md=_dg_norm(model)
+    d=df[(df["make"].map(_dg_norm)==mk) & (df["model"].map(_dg_norm)==md)].copy()
+    if d.empty: return {}
+    d["year"]=pd.to_numeric(d["year"],errors="coerce")
+    d["mileage"]=pd.to_numeric(d["mileage"],errors="coerce").fillna(0)
+    d["price"]=pd.to_numeric(d["price"],errors="coerce")
+    d=d[(d["price"]>=500)&(d["price"]<=250000)]
+    # Prefer ±1 year; widen only if the bank has too little evidence.
+    exact=d[(d["year"]-int(year)).abs()<=1]
+    cohort=exact if len(exact)>=3 else d[(d["year"]-int(year)).abs()<=3]
+    if cohort.empty: return {}
+    cohort=cohort.assign(_dist=(cohort["year"]-int(year)).abs()*12000+(cohort["mileage"]-float(mileage or 0)).abs())
+    cohort=cohort.sort_values("_dist").head(12)
+    prices=cohort["price"].dropna().tolist()
+    if not prices: return {}
+    med=float(statistics.median(prices))
+    ps=sorted(prices)
+    lo=float(ps[max(0,int((len(ps)-1)*.2))]); hi=float(ps[min(len(ps)-1,int((len(ps)-1)*.8))])
+    return {"value":med,"retail":med,"low":lo,"high":hi,"count":len(prices),
+            "confidence":"High" if len(prices)>=8 else ("Medium" if len(prices)>=4 else "Low"),
+            "evidence":"DG Market Bank — remembered genuine asking prices","manual_required":False}
+
+def robust_market_value(rows, year, mileage, make="", model="", asking=0):
+    """DG valuation: fresh adverts, remembered bank, then model price guide."""
+    try:
+        dg_store_market_observations(rows or [],make,model)
     except Exception:
         pass
+    # Fresh adverts first. estimate_market_from_comps returns 'retail', not 'value'.
+    try:
+        direct=estimate_market_from_comps(rows or [],year,mileage)
+        if isinstance(direct,dict):
+            v=float(direct.get("retail") or direct.get("value") or direct.get("average") or 0)
+            if v>0:
+                direct["value"]=v
+                direct["evidence"]="Fresh live comparable asking prices"
+                direct["manual_required"]=False
+                return direct
+    except Exception:
+        pass
+    bank=dg_bank_valuation(make,model,year,mileage)
+    if bank.get("value",0)>0:
+        return bank
     try:
         guide=autoza_price_guide(make,model)
         typical=float(guide.get("typical") or 0)
         if typical>250:
-            return {"value":typical,"low":float(guide.get("low") or typical*.90),
+            return {"value":typical,"retail":typical,
+                    "low":float(guide.get("low") or typical*.90),
                     "high":float(guide.get("high") or typical*1.10),
                     "count":int(guide.get("count") or 0),"confidence":"Medium",
                     "evidence":"Autoza UK model price guide","manual_required":False}
     except Exception:
         pass
-    return {"value":0,"low":0,"high":0,"count":0,"confidence":"None",
-            "evidence":"No usable free market evidence","manual_required":True}
+    return {"value":0,"retail":0,"low":0,"high":0,"count":0,"confidence":"None",
+            "evidence":"No usable free market evidence yet","manual_required":True}
 
 def manual_market_override(default=0):
     return st.number_input("Manual retail estimate (£)",min_value=0,max_value=250000,
@@ -2009,6 +2233,29 @@ def clear_market_if_vehicle_changed():
 
 source_advert=st.session_state.get("source_advert_text","")
 source_info={}
+with st.sidebar.expander("DG UK Vehicle Bank", expanded=False):
+    _bs=dg_vehicle_bank_status()
+    _engine_rows=0
+    try:
+        if DG_ENGINE_BANK_PATH.exists(): _engine_rows=len(pd.read_csv(DG_ENGINE_BANK_PATH,low_memory=False))
+    except Exception: pass
+    st.caption(f"Bundled: {_bs['seed_rows']:,} • Official UK: {_bs['official_rows']:,} • Engines: {_engine_rows:,}")
+    if st.button("BUILD / REFRESH UK + ENGINE BANKS", key="dg_build_full_bank"):
+        with st.spinner("Building UK vehicle and engine/spec banks…"):
+            try:
+                _b=dg_build_full_uk_vehicle_bank(force=True)
+                st.success(f"UK Vehicle Bank ready: {len(_b):,} rows across {_b['make'].nunique():,} makes.")
+            except Exception as _e:
+                st.error("Official UK bank download could not complete. Bundled DG data remains available.")
+                st.caption(str(_e)[:240])
+            try:
+                _eb=dg_build_engine_bank(force=True)
+                st.success(f"Engine Bank ready: {len(_eb):,} engine variants across {_eb['make'].nunique():,} makes.")
+            except Exception as _e:
+                st.error("Engine Bank download could not complete. Existing curated engine rules remain available.")
+                st.caption(str(_e)[:240])
+            st.cache_data.clear()
+
 tabs=st.tabs(["APPRAISAL","SAVED APPRAISALS","MARKET","SETTINGS"])
 
 with tabs[0]:
