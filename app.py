@@ -6,6 +6,8 @@ import json
 import urllib.parse
 import urllib.request
 import urllib.error
+import re
+import html
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 DATA = Path(__file__).with_name("deals.csv")
@@ -187,6 +189,66 @@ def metric_pct(v):
     return f"{(v*100 if abs(v)<=3 else v):.0f}%"
 
 
+
+def import_public_listing(url):
+    """Best-effort anonymous import of metadata Facebook exposes on a public URL.
+    No login, cookies, account automation or access-control bypass.
+    """
+    if not url or not url.startswith(("https://www.facebook.com/","https://facebook.com/","https://m.facebook.com/")):
+        raise ValueError("Paste a Facebook Marketplace/share URL.")
+    req=urllib.request.Request(url,headers={
+        "User-Agent":"Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36",
+        "Accept-Language":"en-GB,en;q=0.9"
+    })
+    with urllib.request.urlopen(req,timeout=12) as r:
+        final_url=r.geturl()
+        raw=r.read(1500000).decode("utf-8","ignore")
+    text=html.unescape(re.sub(r"<[^>]+>"," ",raw))
+    text=re.sub(r"\s+"," ",text)
+
+    # Common public metadata/title/description fields.
+    def meta(prop):
+        pats=[
+          rf'<meta[^>]+(?:property|name)=["\\\']{re.escape(prop)}["\\\'][^>]+content=["\\\']([^"\\\']*)',
+          rf'<meta[^>]+content=["\\\']([^"\\\']*)["\\\'][^>]+(?:property|name)=["\\\']{re.escape(prop)}["\\\']'
+        ]
+        for pat in pats:
+            m=re.search(pat,raw,re.I)
+            if m:return html.unescape(m.group(1))
+        return ""
+    title=meta("og:title") or meta("twitter:title")
+    desc=meta("og:description") or meta("description") or meta("twitter:description")
+    blob=" ".join([title,desc,text[:25000]])
+
+    # Price, mileage, registration and rough vehicle title extraction.
+    price=None
+    for pat in [r'£\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,6})(?!\s*(?:miles|mi))',
+                r'"amount"\\s*:\\s*"?(\\d{3,6})']:
+        m=re.search(pat,blob,re.I)
+        if m:
+            try: price=int(m.group(1).replace(",","")); break
+            except: pass
+    mileage=None
+    for pat in [r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,6})\s*(?:miles|mi)\b',
+                r'([0-9]{1,3})k\s*(?:miles|mi)\b']:
+        m=re.search(pat,blob,re.I)
+        if m:
+            val=m.group(1).replace(",","")
+            mileage=int(val)*(1000 if "k" in m.group(0).lower() and "," not in m.group(1) else 1)
+            break
+    reg=None
+    m=re.search(r'\b([A-Z]{2}[0-9]{2}\s?[A-Z]{3}|[A-Z][0-9]{1,3}\s?[A-Z]{3}|[A-Z]{3}\s?[0-9]{1,3}[A-Z])\b',blob.upper())
+    if m: reg=m.group(1).replace(" ","")
+    vehicle=title.strip()
+    vehicle=re.sub(r'\s*[|·-]\s*Facebook Marketplace.*$','',vehicle,flags=re.I)
+    vehicle=re.sub(r'^Marketplace\s*[-:]\s*','',vehicle,flags=re.I)
+    if vehicle.lower() in ("facebook","facebook marketplace","marketplace"): vehicle=""
+
+    blocked=("log in" in title.lower() and "facebook" in title.lower()) or len(raw)<2000
+    return {"vehicle":vehicle[:100],"price":price,"mileage":mileage,"registration":reg,
+            "description":desc[:600],"final_url":final_url,"blocked":blocked}
+
+
 def calc(asking,retail,prep,fees,risk):
     contingency=prep*st.session_state.contingency_pct/100
     all_in=asking+prep+fees+contingency
@@ -205,12 +267,44 @@ tabs=st.tabs(["SOURCE","MARKET","DEALS","RULES"])
 
 with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Stock appraisal</div><div class="hero">Is it worth buying?</div><div class="sub">Appraise a car against your target margin before you message the seller.</div></div>',unsafe_allow_html=True)
-    listing=st.text_input("Advert link",placeholder="Paste Marketplace or advert link")
+    listing=st.text_input("Facebook Marketplace link",placeholder="Paste the advert/share link",key="listing_url")
+    if st.button("IMPORT ADVERT",use_container_width=True):
+        try:
+            with st.spinner("Reading public advert details…"):
+                imp=import_public_listing(listing)
+            st.session_state["imp_vehicle"]=imp.get("vehicle") or ""
+            st.session_state["imp_reg"]=imp.get("registration") or ""
+            st.session_state["imp_mileage"]=int(imp.get("mileage") or 0)
+            st.session_state["imp_asking"]=int(imp.get("price") or 0)
+            st.session_state["imp_desc"]=imp.get("description") or ""
+            if imp.get("blocked") or not any([imp.get("vehicle"),imp.get("price"),imp.get("mileage"),imp.get("registration")]):
+                st.warning("Facebook did not expose enough public advert data from this link. Use the advert screenshot/text fallback below.")
+            else:
+                st.success("Advert details imported. Check them before analysing.")
+        except Exception as e:
+            st.warning("Facebook did not expose this advert to the importer. Use the screenshot/text fallback below.")
+            st.session_state["import_error"]=str(e)
+
+    with st.expander("Advert screenshot / text fallback"):
+        st.file_uploader("Screenshot",type=["png","jpg","jpeg","webp"],help="Keeps the advert with the appraisal. Automatic screenshot reading is a later integration.")
+        pasted=st.text_area("Paste advert text",placeholder="Paste the listing title, price, mileage and description")
+        if st.button("EXTRACT PASTED TEXT",use_container_width=True) and pasted:
+            blob=pasted
+            pm=re.search(r'£\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,6})',blob)
+            mm=re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,6})\s*(?:miles|mi)\b',blob,re.I)
+            rm=re.search(r'\b([A-Z]{2}[0-9]{2}\s?[A-Z]{3})\b',blob.upper())
+            if pm: st.session_state["imp_asking"]=int(pm.group(1).replace(",",""))
+            if mm: st.session_state["imp_mileage"]=int(mm.group(1).replace(",",""))
+            if rm: st.session_state["imp_reg"]=rm.group(1).replace(" ","")
+            lines=[x.strip() for x in pasted.splitlines() if x.strip()]
+            if lines: st.session_state["imp_vehicle"]=lines[0][:100]
+            st.success("Text extracted. Check the fields below.")
+
     with st.form("appraise"):
-        reg=st.text_input("Registration",placeholder="CV60 ZLZ").upper().replace(" ","")
-        vehicle=st.text_input("Vehicle",placeholder="2014 Ford Fiesta 1.25 Zetec")
-        a,b=st.columns(2); mileage=a.number_input("Mileage",0,300000,70000,1000); asking=b.number_input("Seller asking (£)",0,100000,3000,50)
-        a,b=st.columns(2); retail=a.number_input("Retail estimate (£)",0,150000,4500,50); prep=b.number_input("Prep budget (£)",0,20000,400,50)
+        reg=st.text_input("Registration",value=st.session_state.get("imp_reg",""),placeholder="e.g. CV60 ZLZ").upper().replace(" ","")
+        vehicle=st.text_input("Vehicle",value=st.session_state.get("imp_vehicle",""),placeholder="Make, model and derivative")
+        a,b=st.columns(2); mileage=a.number_input("Mileage",0,300000,int(st.session_state.get("imp_mileage",0)),1000); asking=b.number_input("Seller asking (£)",0,100000,int(st.session_state.get("imp_asking",0)),50)
+        a,b=st.columns(2); retail=a.number_input("Retail estimate (£)",0,150000,0,50); prep=b.number_input("Prep budget (£)",0,20000,400,50)
         a,b=st.columns(2); fees=a.number_input("Fees / warranty (£)",0,10000,250,25); risk=b.selectbox("Risk",["Low","Medium","High"],1)
         notes=st.text_area("Notes",placeholder="History, MOT, tyres, damage, keys…")
         go=st.form_submit_button("ANALYSE DEAL",use_container_width=True)
