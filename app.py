@@ -30,6 +30,34 @@ def mot_time_adjustment(months_remaining):
     if m>=1:return -250
     return -350
 
+
+def dg_appraisal_overview(market_average,recommended_retail,asking,max_buy,category,category_adjustment,
+                          condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,
+                          prep,other_costs,contingency,target_margin,comp_count,market_low,market_high):
+    notes=[]
+    if asking>max_buy:
+        notes.append(f"BUYING POSITION — Seller is £{asking-max_buy:,.0f} above DG's maximum buy. Current assumptions do not leave the target margin.")
+    else:
+        notes.append(f"BUYING POSITION — Seller is £{max_buy-asking:,.0f} inside DG's maximum buy before unrecorded defects.")
+    if category!="Clear / none known":
+        notes.append(f"INSURANCE CATEGORY — {category}; £{abs(category_adjustment):,.0f} is already deducted from retail. DG view: verify repair quality/provenance and expect a smaller buyer pool than an equivalent clear-history car.")
+    if mot_analysis.get("items"):
+        notes.append(f"MOT — Entered notes flag {', '.join(mot_analysis['items'])}; current allowance £{mot_notes_cost:,.0f}. DG view: price the actual work before buying.")
+    else:
+        notes.append("MOT — No recognised cost item was extracted. That does not mean the MOT is risk-free.")
+    if mot_months<3: notes.append(f"MOT TERM — About {mot_months} month(s) remain. DG view: plan on a fresh MOT before retail.")
+    elif mot_months<6: notes.append(f"MOT TERM — About {mot_months} months remain. DG view: factor stock time into whether a fresh MOT will be needed.")
+    else: notes.append(f"MOT TERM — About {mot_months} months remain; no major short-MOT concern on that input alone.")
+    notes.append(f"INPUTS — Condition {condition_grade}/5; service history {service_history}; keys {keys}; prep £{prep:,.0f}; other costs £{other_costs:,.0f}; contingency £{contingency:,.0f}.")
+    if comp_count<5:
+        notes.append(f"STOCK / EXIT RISK — Only {comp_count} close current comparable(s). DG view: low confidence on both valuation and stock turn. No genuine days-to-sell figure is available from this data.")
+    else:
+        spread=max(0,market_high-market_low); pct=(spread/market_average*100) if market_average else 0
+        label="higher" if pct>30 else "moderate" if pct>15 else "lower"
+        notes.append(f"STOCK / EXIT RISK — {comp_count} close comparables with roughly {pct:.0f}% asking-price spread. DG view: pricing/exit uncertainty is {label}. This is a proxy, not measured days-to-sell.")
+    notes.append(f"RETAIL — Live average £{market_average:,.0f}; DG retail £{recommended_retail:,.0f}; target contribution £{target_margin:,.0f}.")
+    return notes
+
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 DATA = Path(__file__).with_name("deals.csv")
 
@@ -1227,13 +1255,24 @@ with tabs[0]:
             + manual_retail_adjustment
         )
         max_buy=max(0,recommended_retail-prep-fees-mot_notes_cost-contingency-target_margin)
-        target_buy=max(0,max_buy-250)
-        opening_offer=max(0,target_buy-250)
+        target_buy=max_buy-250
+        opening_offer=target_buy-250
+        target_buy_display=target_buy_display if target_buy>0 else "N/A"
+        opening_offer_display=opening_offer_display if opening_offer>0 else "N/A"
         contribution_at_ask=recommended_retail-(asking+prep+fees+mot_notes_cost+contingency)
         roi_at_ask=(contribution_at_ask/(asking+prep+fees+contingency)*100) if (asking+prep+fees+contingency)>0 else 0
 
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}</div></div>',unsafe_allow_html=True)
         st.markdown(f"""<div class="card" style="border:2px solid #111827">
+        st.markdown('<div class="section">DG BUYER OVERVIEW</div>',unsafe_allow_html=True)
+        overview_notes=dg_appraisal_overview(
+            market_average,recommended_retail,asking,max_buy,insurance_category,category_adjustment,
+            condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,
+            prep,fees,contingency,target_margin,int(market.get("count",0) or 0),
+            float(market.get("low",market_average) or market_average),float(market.get("high",market_average) or market_average))
+        for overview_note in overview_notes:
+            st.write(overview_note)
+
         <div class="label">WHAT TO DO</div>
         <div class="meta">Open at</div><div class="car">£{opening_offer:,.0f}</div>
         <div class="meta">Aim to buy at</div><div class="car">£{target_buy:,.0f}</div>
