@@ -1465,57 +1465,76 @@ def _dg_market_stats_values(payload, make="", model=""):
     return scored[0][1]
 
 
+def _mcp_payloads(raw):
+    out=[]
+    try: out.append(json.loads(raw))
+    except Exception:
+        for line in str(raw or "").splitlines():
+            if line.startswith("data:"):
+                try: out.append(json.loads(line[5:].strip()))
+                except Exception: pass
+    return out
+
+def _autoza_mcp_post(body):
+    req=Request("https://autoza.co.uk/api/mcp",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream",
+                 "User-Agent":"DG-Deal-Finder/1.0"},method="POST")
+    with urlopen(req,timeout=20) as resp:
+        raw=resp.read().decode("utf-8","ignore")
+    return _mcp_payloads(raw)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def autoza_mcp_tools():
+    try:
+        for payload in _autoza_mcp_post({"jsonrpc":"2.0","id":1,"method":"tools/list"}):
+            tools=(payload.get("result",{}) or {}).get("tools") or []
+            if tools: return tools
+    except Exception: pass
+    return []
+
 def autoza_price_guide(make="", model=""):
-    """Autoza MCP get_uk_price_guide: model-aware, no-key asking-price guidance."""
-    endpoint="https://autoza.co.uk/api/mcp"
-    arg_sets=[]
-    if make and model:
-        arg_sets.extend([
-            {"make":str(make).strip(),"model":str(model).strip()},
-            {"query":f"{str(make).strip()} {str(model).strip()}"},
-        ])
-    if make:
-        arg_sets.append({"make":str(make).strip()})
-    for args in arg_sets:
-        body={"jsonrpc":"2.0","id":1,"method":"tools/call",
-              "params":{"name":"get_uk_price_guide","arguments":args}}
-        try:
-            req=Request(endpoint,data=json.dumps(body).encode("utf-8"),
-                        headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream",
-                                 "User-Agent":"DG-Deal-Finder/1.0"},method="POST")
-            with urlopen(req,timeout=15) as resp:
-                raw=resp.read().decode("utf-8","ignore")
-            # MCP may return JSON or SSE data: lines.
-            payloads=[]
-            try: payloads=[json.loads(raw)]
-            except Exception:
-                for line in raw.splitlines():
-                    if line.startswith("data:"):
-                        try: payloads.append(json.loads(line[5:].strip()))
-                        except Exception: pass
-            for payload in payloads:
-                texts=[]
-                result=payload.get("result",{}) if isinstance(payload,dict) else {}
-                for item in (result.get("content") or []):
-                    if isinstance(item,dict) and item.get("text"): texts.append(str(item["text"]))
-                blob=" ".join(texts)
-                # Prefer structuredContent if supplied.
-                structured=result.get("structuredContent") or result.get("structured_content") or {}
-                vals=_dg_market_stats_values(structured,make,model) if structured else {}
+    """Use the live MCP inputSchema; never guess the price-guide arguments."""
+    tools=autoza_mcp_tools()
+    tool=next((x for x in tools if isinstance(x,dict) and x.get("name")=="get_uk_price_guide"),None)
+    if not tool: return {}
+    schema=tool.get("inputSchema") or tool.get("input_schema") or {}
+    props=schema.get("properties") or {}
+    args={}
+    for key in props:
+        lk=key.lower()
+        if lk in ("make","manufacturer") and make: args[key]=str(make).strip()
+        elif lk in ("model","vehicle_model") and model: args[key]=str(model).strip()
+        elif lk in ("query","vehicle","search") and (make or model):
+            args[key]=" ".join(x for x in (str(make).strip(),str(model).strip()) if x)
+    if any(k not in args for k in (schema.get("required") or [])): return {}
+    body={"jsonrpc":"2.0","id":2,"method":"tools/call",
+          "params":{"name":"get_uk_price_guide","arguments":args}}
+    try: payloads=_autoza_mcp_post(body)
+    except Exception: return {}
+    for payload in payloads:
+        result=payload.get("result",{}) if isinstance(payload,dict) else {}
+        structured=result.get("structuredContent") or result.get("structured_content") or {}
+        vals=_dg_market_stats_values(structured,make,model) if structured else {}
+        if vals.get("typical",0)>250:
+            vals["source"]="Autoza UK model price guide"; return vals
+        texts=[str(i.get("text")) for i in (result.get("content") or [])
+               if isinstance(i,dict) and i.get("text")]
+        for txt in texts:
+            try:
+                vals=_dg_market_stats_values(json.loads(txt),make,model)
                 if vals.get("typical",0)>250:
-                    vals["source"]="Autoza UK price guide"; return vals
-                # Parse labelled GBP values from textual MCP response.
-                def money(label):
-                    m=re.search(label+r"[^£\d]{0,30}£?\s*([\d,]+)",blob,re.I)
-                    return float(m.group(1).replace(",","")) if m else 0
-                typical=money(r"(?:typical|median|average|avg(?:erage)? asking price)")
-                low=money(r"(?:lowest|low|from)")
-                high=money(r"(?:highest|high|up to)")
-                if typical>250:
-                    return {"typical":typical,"low":low,"high":high,"count":0,
-                            "source":"Autoza UK price guide"}
-        except Exception:
-            continue
+                    vals["source"]="Autoza UK model price guide"; return vals
+            except Exception: pass
+        blob=" ".join(texts)
+        def money(pattern):
+            m=re.search(pattern+r"[^£\d]{0,40}£?\s*([\d,]+(?:\.\d+)?)",blob,re.I)
+            return float(m.group(1).replace(",","")) if m else 0
+        typical=money(r"(?:typical|median|average|avg(?:erage)? asking price)")
+        low=money(r"(?:lowest|low)"); high=money(r"(?:highest|high)")
+        if typical>250:
+            return {"typical":typical,"low":low,"high":high,"count":0,
+                    "source":"Autoza UK model price guide"}
     return {}
 
 def autoza_market_stats(make="", model=""):
@@ -2610,6 +2629,12 @@ with tabs[0]:
             _dg_render_market=0.0
         if _dg_render_market <= 0:
             st.error("NO USABLE MARKET VALUATION — DG has not produced a £0 valuation.")
+        try:
+            _dg_tools=autoza_mcp_tools()
+            _dg_has_guide=any(isinstance(x,dict) and x.get("name")=="get_uk_price_guide" for x in _dg_tools)
+            st.caption("Valuation diagnostics: Autoza model price guide " + ("detected" if _dg_has_guide else "not reachable/detected") + ".")
+        except Exception:
+            pass
             st.caption("Free market evidence was insufficient after progressively widening the comparable cohort. Enter a retail estimate to continue.")
             _dg_manual_render=st.number_input("Retail estimate to use (£)",min_value=0,max_value=250000,value=int(asking or 0),step=100,key="v54_manual_retail")
             if _dg_manual_render > 0:
