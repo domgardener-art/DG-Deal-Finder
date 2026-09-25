@@ -458,6 +458,20 @@ div[data-testid="stMetricValue"]{font-size:1.34rem!important;letter-spacing:-.02
 @media (max-width:640px){
   .stButton>button,.stFormSubmitButton>button,.stDownloadButton>button,.stLinkButton>a{transition:none!important}
 }
+
+/* V33 — high-contrast save action */
+.stButton>button[kind="primary"]{
+  background:#176B45!important;
+  color:#FFFFFF!important;
+  border:2px solid #176B45!important;
+  font-weight:800!important;
+  box-shadow:0 5px 14px rgba(23,107,69,.22)!important;
+}
+.stButton>button[kind="primary"]:hover{
+  background:#105638!important;
+  color:#FFFFFF!important;
+  border-color:#105638!important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -701,6 +715,12 @@ def taxonomy_options(variants,spec="",engine="",fuel=""):
 # ---------- VEHICLE SPEC CASCADE ----------
 # Reliable local fallback for common UK stock. Live sources augment this when available.
 DG_POWERTRAIN_CATALOG = {
+    ("Mazda","MX-5"): {
+        "engines":["1.5 SKYACTIV-G","2.0 SKYACTIV-G"],
+        "fuels":["Petrol"],
+        "gearboxes":["Manual","Automatic"],
+        "specs":["SE","SE-L","Sport","Sport Nav","Sport Tech","RF","GT Sport Tech","Prime-Line","Exclusive-Line","Homura"]
+    },
     ("Skoda","Octavia"): {
         "engines":["1.0L","1.2L","1.4L","1.5L","1.6L","1.8L","2.0L"],
         "fuels":["Petrol","Diesel","Hybrid"],
@@ -1365,7 +1385,7 @@ def clear_market_if_vehicle_changed():
 
 source_advert=st.session_state.get("source_advert_text","")
 source_info={}
-tabs=st.tabs(["APPRAISE","MARKET","DEALS","SETTINGS"])
+tabs=st.tabs(["APPRAISAL","SAVED APPRAISALS","MARKET","SETTINGS"])
 
 with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG buying desk</div><div class="hero">Appraise a vehicle</div><div class="sub">Vehicle, market, condition and deal risk — one buying decision.</div></div>',unsafe_allow_html=True)
@@ -1441,7 +1461,9 @@ with tabs[0]:
         # With no verified taxonomy, narrow live-advert engines by selected fuel where possible.
         live_fuel_rows=[c for c in selector_rows if (not selected_fuel or extract_fuel(c).lower()==selected_fuel.lower())]
         live_engines,_,_,_=build_vehicle_choices(live_fuel_rows)
-        engine_options=live_engines if live_engines else engines
+        # A thin advert sample must never erase valid model engines from the fallback catalogue.
+        # Merge both sources, preserving live choices first and adding any missing known engines.
+        engine_options=_merge_unique(live_engines,engines)
 
     selected_engine=st.selectbox("Engine / powertrain",["— Choose engine —"]+engine_options,
         disabled=not bool(selected_model))
@@ -1464,7 +1486,7 @@ with tabs[0]:
         if taxonomy_verified:
             st.success("Compatibility verified by vehicle taxonomy — incompatible engine, fuel and gearbox choices are removed.")
         else:
-            st.info("No derivative-level taxonomy record was returned for this exact vehicle/year. DG is using broader fallback choices and will not claim they are compatibility-verified.")
+            st.info("No derivative-level taxonomy record was returned for this exact vehicle/year. DG merges live-advert choices with its model fallback so a thin market sample cannot hide valid engines/specs; manual override remains available.")
     cat_mileage=st.number_input("Mileage",0,500000,0,1000,key="catalogue_mileage")
     st.markdown('<div class="section">Source advert</div>',unsafe_allow_html=True)
     source_advert=st.text_area("Paste advert / description",key="source_advert_text",placeholder="Paste the Marketplace or other advert text here. Include its link if you have it.",help="DG keeps the seller wording as context. Confirm the important facts in the appraisal fields.")
@@ -1965,7 +1987,7 @@ with tabs[0]:
                         st.caption(f"{tier} · Asking £{price:,.0f}" + (f" · {int(miles):,} miles" if miles else ""))
         st.caption("DG prioritises exact matches, then progressively uses the closest same-model evidence when the exact derivative market is thin. Asking prices are not achieved sale prices.")
 
-        appraisal_record={"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"description_repair_allowance":detected_repair_cost,"description_repair_items":"; ".join(x["issue"] for x in repair_intel.get("items",[])),"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
+        appraisal_record={"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"display_name":(reg.strip().upper() if str(reg or "").strip() else vehicle),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"description_repair_allowance":detected_repair_cost,"description_repair_items":"; ".join(x["issue"] for x in repair_intel.get("items",[])),"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
         st.session_state["current_appraisal_record"]=appraisal_record
 
         st.markdown('<div class="section">Finish appraisal</div>',unsafe_allow_html=True)
@@ -1987,13 +2009,13 @@ with tabs[0]:
                         pass
                 saved.to_csv(DATA,index=False)
                 st.session_state["_last_saved_fingerprint"]=fingerprint
-                st.success("Appraisal saved. Open DEALS to view it later.")
+                st.success(f"Saved as {(str(record.get('registration','')).strip().upper() or str(record.get('vehicle','Vehicle appraisal')))}. Open SAVED APPRAISALS to view it.")
         if new_col.button("APPRAISE NEW VEHICLE",use_container_width=True,key="new_appraisal_btn"):
             reset_appraisal()
             st.rerun()
     st.markdown('</div>',unsafe_allow_html=True)
 
-with tabs[1]:
+with tabs[2]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Market intelligence</div><div class="hero">Market history</div><div class="sub">DG will build a genuine trend from appraisals you save over time.</div></div>',unsafe_allow_html=True)
     if DATA.exists():
         try:
@@ -2006,22 +2028,44 @@ with tabs[1]:
         st.info("No saved market history yet. Keep appraising cars and DG will build its own evidence.")
     st.markdown('</div>',unsafe_allow_html=True)
 
-with tabs[2]:
-    st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Opportunity list</div><div class="hero">Saved deals</div><div class="sub">Keep your strongest sourcing opportunities in one place.</div></div>',unsafe_allow_html=True)
+with tabs[1]:
+    st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG appraisal library</div><div class="hero">Saved appraisals</div><div class="sub">Find previous appraisals by registration, vehicle, spec or notes.</div></div>',unsafe_allow_html=True)
     if DATA.exists():
-        df=pd.read_csv(DATA)
-        if "date" in df.columns: df=df.sort_values("date",ascending=False)
-        for _,r in df.iterrows():
-            klass={"BUY":"good","BUY CANDIDATE":"good","RESEARCH":"warn","INVESTIGATE":"warn","PASS":"bad"}.get(str(r.get("verdict")),"warn")
-            saved_date=str(r.get("date",""))
-            st.markdown(f'<div class="card"><div class="car">{r.get("vehicle","Vehicle")}</div><div class="meta">{r.get("registration","")} · {int(r.get("mileage",0)):,} miles · Saved {saved_date}</div><span class="chip {klass}">{r.get("verdict","")}</span></div>',unsafe_allow_html=True)
-            a,b,c=st.columns(3)
-            a.metric("Ask",f"£{float(r.get('asking',0) or 0):,.0f}")
-            b.metric("Retail",f"£{float(r.get('recommended_retail',r.get('retail_est',0)) or 0):,.0f}")
-            c.metric("Max buy",f"£{float(r.get('max_buy',0) or 0):,.0f}")
-            st.caption(f"Target contribution result: £{float(r.get('potential_contribution',0) or 0):,.0f} · Risk {r.get('risk','')} · Score {int(float(r.get('score',0) or 0))}")
-        st.download_button("Export deals",df.to_csv(index=False).encode(),"dg_deals.csv","text/csv",use_container_width=True)
-    else: st.info("No saved deals yet.")
+        try:
+            df=pd.read_csv(DATA)
+        except Exception:
+            df=pd.DataFrame()
+        if not df.empty:
+            if "date" in df.columns: df=df.sort_values("date",ascending=False)
+            search=st.text_input("Search saved appraisals",placeholder="Search reg, vehicle, spec or notes…",key="saved_appraisal_search")
+            if search.strip():
+                q=search.strip().lower()
+                search_cols=[c for c in ["registration","vehicle","spec","notes","date"] if c in df.columns]
+                mask=df[search_cols].fillna("").astype(str).apply(lambda col: col.str.lower().str.contains(q,regex=False)).any(axis=1)
+                view=df[mask]
+            else:
+                view=df
+            st.caption(f"{len(view)} appraisal{'s' if len(view)!=1 else ''} shown · {len(df)} saved")
+            if view.empty:
+                st.info("No saved appraisal matches that search.")
+            for _,r in view.iterrows():
+                reg_name=str(r.get("registration","") or "").strip().upper()
+                appraisal_name=reg_name if reg_name else str(r.get("vehicle","Vehicle appraisal") or "Vehicle appraisal")
+                vehicle_name=str(r.get("vehicle","Vehicle") or "Vehicle")
+                klass={"BUY":"good","BUY CANDIDATE":"good","RESEARCH":"warn","INVESTIGATE":"warn","PASS":"bad"}.get(str(r.get("verdict")),"warn")
+                saved_date=str(r.get("date",""))
+                mileage_val=float(r.get("mileage",0) or 0)
+                st.markdown(f'<div class="card"><div class="label">SAVED APPRAISAL</div><div class="car">{appraisal_name}</div><div class="meta">{vehicle_name} · {mileage_val:,.0f} miles · Saved {saved_date}</div><span class="chip {klass}">{r.get("verdict","")}</span></div>',unsafe_allow_html=True)
+                a,b,c=st.columns(3)
+                a.metric("Ask",f"£{float(r.get('asking',0) or 0):,.0f}")
+                b.metric("Retail",f"£{float(r.get('recommended_retail',r.get('retail_est',0)) or 0):,.0f}")
+                c.metric("Max buy",f"£{float(r.get('max_buy',0) or 0):,.0f}")
+                st.caption(f"Target contribution result: £{float(r.get('potential_contribution',0) or 0):,.0f} · Risk {r.get('risk','')} · Score {int(float(r.get('score',0) or 0))}")
+            st.download_button("Export saved appraisals",view.to_csv(index=False).encode(),"dg_saved_appraisals.csv","text/csv",use_container_width=True)
+        else:
+            st.info("No saved appraisals yet.")
+    else:
+        st.info("No saved appraisals yet. Save an appraisal and it will appear here under its registration.")
     st.markdown('</div>',unsafe_allow_html=True)
 
 with tabs[3]:
