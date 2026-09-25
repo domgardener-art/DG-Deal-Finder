@@ -335,44 +335,57 @@ DG_WEB_ISSUE_PATTERNS=[
 def _dg_strip_html(x):
     return re.sub(r"\s+"," ",html.unescape(re.sub(r"<[^>]+>"," ",str(x or "")))).strip()
 
-@st.cache_data(ttl=604800,show_spinner=False)
+@st.cache_data(ttl=86400,show_spinner=False)
 def dg_web_research(make,model,year,engine,fuel,gearbox):
-    """No-key live web search. Returns snippet evidence; does not diagnose the individual car."""
-    from urllib.parse import quote_plus as _dg_quote_plus, urlparse as _dg_urlparse, parse_qs as _dg_parse_qs, unquote as _dg_unquote
+    """Live no-key research with explicit status. Never equates blocked search with 'no issues'."""
+    from urllib.parse import quote_plus as _q
+    import json as _json
     vehicle=" ".join(str(x).strip() for x in [year,make,model,engine,fuel,gearbox] if str(x or "").strip())
-    q=_dg_quote_plus(f'{vehicle} common problems reliability faults buying guide')
-    url=f"https://html.duckduckgo.com/html/?q={q}"
-    try:
-        req=Request(url,headers={"User-Agent":"Mozilla/5.0 DG-Deal-Finder/1.0","Accept":"text/html"})
-        with urlopen(req,timeout=12) as resp: page=resp.read().decode("utf-8","replace")
-    except Exception:
-        return []
-    blocks=re.findall(r'<div[^>]+class="[^"]*result[^"]*"[^>]*>(.*?)</div>\s*</div>',page,re.I|re.S)
-    evidence=[]
-    for b in blocks[:12]:
-        lm=re.search(r'class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',b,re.I|re.S)
-        sm=re.search(r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div)>',b,re.I|re.S)
-        if not lm: continue
-        href=html.unescape(lm.group(1))
-        # unwrap DDG redirect when present
+    texts=[]; sources=[]; transport_ok=False
+
+    # Official DuckDuckGo Instant Answer API: structured/no-key. It is not a full SERP,
+    # so absence of deep fault results is "insufficient", not "no known issues".
+    for suffix in [" common problems reliability", " recalls faults", " buying guide problems"]:
         try:
-            if "uddg=" in href:
-                href=_dg_unquote(_dg_parse_qs(_dg_urlparse(href).query).get("uddg",[href])[0])
-            domain=_dg_urlparse(href).netloc.lower().replace("www.","")
-        except Exception: domain=""
-        title=_dg_strip_html(lm.group(2)); snippet=_dg_strip_html(sm.group(1) if sm else "")
-        if domain and snippet: evidence.append({"title":title,"snippet":snippet,"url":href,"domain":domain})
+            url="https://api.duckduckgo.com/?q="+_q(vehicle+suffix)+"&format=json&no_html=1&skip_disambig=1"
+            req=Request(url,headers={"User-Agent":"DG-Deal-Finder/1.0","Accept":"application/json"})
+            with urlopen(req,timeout=10) as resp:
+                data=_json.loads(resp.read().decode("utf-8","replace")); transport_ok=True
+            for k in ("AbstractText","Answer","Definition"):
+                if data.get(k): texts.append(str(data[k]))
+            if data.get("AbstractURL"): sources.append({"domain":"duckduckgo.com","url":data["AbstractURL"]})
+            def walk(items):
+                for it in items or []:
+                    if isinstance(it,dict):
+                        if it.get("Text"): texts.append(str(it["Text"]))
+                        if it.get("FirstURL"): sources.append({"domain":_dg_domain(it["FirstURL"]),"url":it["FirstURL"]})
+                        walk(it.get("Topics"))
+            walk(data.get("RelatedTopics"))
+        except Exception:
+            pass
+
+    blob=" ".join(texts).lower()
     learned=[]
     for issue,terms,severity,ask,check,lo,hi in DG_WEB_ISSUE_PATTERNS:
-        hits=[e for e in evidence if any(t in (e["title"]+" "+e["snippet"]).lower() for t in terms)]
-        domains=sorted(set(e["domain"] for e in hits))
-        if len(domains)<2: continue
+        matched=[t for t in terms if t in blob]
+        if not matched: continue
+        doms=sorted(set(x["domain"] for x in sources if x.get("domain")))
         learned.append({"make":make,"model":model,"year_from":year or "","year_to":year or "",
           "engine_terms":str(engine or ""),"fuel":fuel,"gearbox":gearbox,"issue":issue,"severity":severity,
           "ask":ask,"check":check,"cost_low":lo,"cost_high":hi,
-          "source":" + ".join(domains[:3]),"source_url":hits[0]["url"],"evidence_type":"live web cross-check",
-          "confidence":"Medium" if len(domains)==2 else "High"})
-    return learned
+          "source":" + ".join(doms[:3]) or "DuckDuckGo structured web evidence",
+          "source_url":sources[0]["url"] if sources else "",
+          "evidence_type":"live structured web research","confidence":"Medium" if len(matched)>=2 else "Low"})
+
+    status="issues_found" if learned else ("insufficient_evidence" if transport_ok else "research_unavailable")
+    return {"status":status,"issues":learned,"evidence_items":len(texts),"vehicle":vehicle}
+
+def _dg_domain(url):
+    try:
+        from urllib.parse import urlparse
+        return urlparse(str(url)).netloc.lower().replace("www.","")
+    except Exception:return ""
+
 DG_MODEL_BUYING_INTEL=[
  {"makes":["Peugeot","Citroen","DS","Vauxhall"],"engine_terms":["1.0 puretech","1.2 puretech","eb2","1.2 petrol"],
   "years":(2012,2022),"issue":"Oil-bathed timing belt degradation / oil-pressure risk",
@@ -448,7 +461,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V87 visible buying intelligence")
+st.caption("DG Deal Finder • V88 reliable research status")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3573,7 +3586,9 @@ with tabs[0]:
                         st.caption(f"{tier} · Asking £{price:,.0f}" + (f" · {int(miles):,} miles" if miles else ""))
         st.caption("DG prioritises exact matches, then progressively uses the closest same-model evidence when the exact derivative market is thin. Asking prices are not achieved sale prices.")
 
-        _dg_live_intel=dg_web_research(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
+        _dg_research=dg_web_research(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
+        _dg_live_intel=_dg_research.get("issues",[]) if isinstance(_dg_research,dict) else []
+        _dg_research_status=_dg_research.get("status","research_unavailable") if isinstance(_dg_research,dict) else "research_unavailable"
         dg_store_intel(_dg_live_intel)
         _dg_intel=[]
         # Legacy starter rules are optional; the live/learned engine must never crash if absent.
@@ -3604,8 +3619,10 @@ with tabs[0]:
             st.success(f"Live research cross-checked {len(_dg_live_intel)} buying issue(s) and added them to DG's knowledge bank.")
         elif _dg_intel:
             st.info("Using DG's existing sourced buying-intelligence bank for this vehicle.")
+        elif _dg_research_status=="research_unavailable":
+            st.warning("Live online research was unavailable for this appraisal. DG has not interpreted that as 'no known issues'.")
         else:
-            st.info("Live research completed but no model-specific issue passed DG's evidence threshold. No fault has been assumed.")
+            st.info("Online research returned insufficient model-specific evidence to verify an issue. DG has not interpreted that as 'no known issues'.")
             st.markdown("**Questions still worth asking on any used car:**")
             st.markdown("- What major maintenance or repairs have been done, and are there invoices?\n- Any warning lights, intermittent faults, oil/coolant use or starting issues?\n- When were the gearbox/transmission and other scheduled fluids last serviced?\n- Any recent tyres, brakes, suspension, battery or air-conditioning work?")
         if _dg_intel:
