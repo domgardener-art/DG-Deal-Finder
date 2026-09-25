@@ -259,74 +259,24 @@ COMMON_UK_SPECS={
 }
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def autoza_mcp_call(tool_name, arguments):
-    body={"jsonrpc":"2.0","id":"dg1","method":"tools/call",
-          "params":{"name":tool_name,"arguments":arguments}}
-    req=urllib.request.Request(
-        "https://autoza.co.uk/api/mcp",
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream",
-                 "User-Agent":"DG-Deal-Finder/1.0"},
-        method="POST")
-    with urllib.request.urlopen(req,timeout=25) as r:
-        raw=r.read().decode("utf-8","ignore")
-    frames=[]
-    if raw.lstrip().startswith("{"): frames=[raw]
-    else: frames=[ln[5:].strip() for ln in raw.splitlines() if ln.startswith("data:")]
-    if not frames: raise RuntimeError("Market service returned no data")
-    envelope=json.loads(frames[-1])
-    if envelope.get("error"): raise RuntimeError(str(envelope["error"]))
-    result=envelope.get("result",{})
-    # MCP tool result may be structuredContent or text JSON.
-    if isinstance(result,dict) and result.get("structuredContent") is not None:
-        return result["structuredContent"]
-    if isinstance(result,dict):
-        for c in result.get("content",[]) or []:
-            if isinstance(c,dict) and c.get("type")=="text":
-                txt=c.get("text","")
-                try: return json.loads(txt)
-                except: return {"text":txt}
-    return result
-
-def _find_list(obj):
-    if isinstance(obj,list) and obj and all(isinstance(x,dict) for x in obj): return obj
-    if isinstance(obj,dict):
-        for k in ("vehicles","cars","listings","results","data","items"):
-            if k in obj:
-                got=_find_list(obj[k])
-                if got: return got
-        for v in obj.values():
-            got=_find_list(v)
-            if got: return got
-    return []
-
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def autoza_comparables(make, model, year, limit=50):
-    payload=autoza_mcp_call("search_used_cars",{
-        "make":make,"model":model,"min_year":max(1990,int(year)-2),
-        "max_year":int(year)+2,"limit":min(int(limit),50)})
-    return _find_list(payload)
-
-@st.cache_data(ttl=900, show_spinner=False)
-def autoza_price_guide(make, model):
-    return autoza_mcp_call("get_uk_price_guide",{"make":make,"model":model})
-
-def _walk_numbers(obj, names):
-    wanted={x.lower() for x in names}
-    if isinstance(obj,dict):
-        for k,v in obj.items():
-            if str(k).lower() in wanted:
-                try: return float(re.sub(r"[^0-9.]","",str(v)))
-                except: pass
-        for v in obj.values():
-            z=_walk_numbers(v,names)
-            if z is not None:return z
-    elif isinstance(obj,list):
-        for v in obj:
-            z=_walk_numbers(v,names)
-            if z is not None:return z
-    return None
+    params={"make":str(make).strip(),"model":str(model).strip(),
+            "min_year":max(1990,int(year)-2),"max_year":int(year)+2,
+            "page":1,"limit":min(max(int(limit),1),50)}
+    url="https://autoza.co.uk/api/v1/vehicles?"+urlencode(params)
+    req=Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
+    with urlopen(req,timeout=20) as response:
+        payload=json.loads(response.read().decode("utf-8"))
+    if isinstance(payload,list): return payload
+    if isinstance(payload,dict):
+        for key in ("vehicles","results","data","items"):
+            value=payload.get(key)
+            if isinstance(value,list): return value
+            if isinstance(value,dict):
+                for sub in ("vehicles","results","items"):
+                    if isinstance(value.get(sub),list): return value[sub]
+    return []
 
 def _num(d,*keys):
     if not isinstance(d,dict): return None
@@ -680,17 +630,13 @@ with tabs[0]:
             try:
                 with st.spinner("Checking similar UK dealer adverts…"):
                     comps=autoza_comparables(selected_make,selected_model,selected_year,50)
+                    if not comps:
+                        simple_model=re.sub(r"[^A-Za-z0-9 ]+"," ",selected_model).strip()
+                        if simple_model and simple_model.lower()!=selected_model.lower():
+                            comps=autoza_comparables(selected_make,simple_model,selected_year,50)
                     market=estimate_market_from_comps(comps,selected_year,cat_mileage)
                     if market:
                         market["source"]=f'Average of {market["count"]} closest current for-sale listings'
-                    else:
-                        guide=autoza_price_guide(selected_make,selected_model)
-                        typical=_walk_numbers(guide,["typical","typical_price","median","average","average_price"])
-                        low=_walk_numbers(guide,["lowest","low","minimum","min_price"])
-                        high=_walk_numbers(guide,["highest","high","maximum","max_price"])
-                        if typical:
-                            market={"retail":typical,"low":low or typical,"high":high or typical,
-                                    "count":0,"rows":[],"source":"Autoza UK price guide"}
                 if market:
                     st.session_state["market_estimate"]=market
                     st.session_state["market_retail"]=int(round(market["retail"]/50)*50)
@@ -835,6 +781,7 @@ with tabs[0]:
             st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} the average comparable asking price." if delta else "Seller asking matches the comparable median.")
 
         st.markdown('<div class="section">Auto Trader market guide</div>',unsafe_allow_html=True)
+        st.caption("If suitable live listings are unavailable, DG leaves the estimate blank rather than inventing a value.")
         if at_configured() and reg:
             try:
                 at_raw=fetch_at_vehicle(reg,mileage)
