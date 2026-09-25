@@ -1,4 +1,5 @@
 from urllib.parse import urlencode
+from urllib.parse import quote
 from io import BytesIO
 from urllib.request import Request, urlopen
 import streamlit as st
@@ -1420,37 +1421,63 @@ def comparable_vehicle_label(car, fallback_make="", fallback_model=""):
     return " ".join(parts) if parts else "Comparable vehicle"
 
 
+
+def _dg_market_stats_values(payload, make="", model=""):
+    """Extract a usable asking-price guide from Autoza public market-stats JSON."""
+    candidates=[]
+    def walk(x):
+        if isinstance(x,dict):
+            candidates.append(x)
+            for v in x.values(): walk(v)
+        elif isinstance(x,list):
+            for v in x: walk(v)
+    walk(payload)
+    make_l=str(make or "").strip().lower(); model_l=str(model or "").strip().lower()
+    scored=[]
+    for d in candidates:
+        blob=" ".join(str(d.get(k,"")) for k in ("make","manufacturer","model","name","label")).lower()
+        score=(2 if make_l and make_l in blob else 0)+(3 if model_l and model_l in blob else 0)
+        vals={}
+        for out,keys in {
+            "typical":("typical","median","average","avg","averagePrice","avgPrice","medianPrice"),
+            "low":("lowest","low","min","minPrice","lowestPrice"),
+            "high":("highest","high","max","maxPrice","highestPrice"),
+            "count":("count","total","sampleSize","sample_size","vehicles","listings")
+        }.items():
+            for k in keys:
+                try:
+                    v=d.get(k)
+                    if v not in (None,""):
+                        vals[out]=float(str(v).replace("£","").replace(",",""))
+                        break
+                except Exception: pass
+        if vals.get("typical",0)>250:
+            scored.append((score,vals))
+    if not scored: return {}
+    scored.sort(key=lambda z:z[0],reverse=True)
+    return scored[0][1]
+
 def autoza_market_stats(make="", model=""):
-    """Free/no-key aggregate UK asking-price evidence from Autoza."""
+    """Free/no-key Autoza aggregate asking-price fallback."""
     base="https://autoza.co.uk/api/public/market-stats"
-    params={}
-    if make: params["make"]=str(make).strip()
-    if model: params["model"]=str(model).strip()
-    url=base+("?" + urllib.parse.urlencode(params) if params else "")
-    req=urllib.request.Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/51"})
-    try:
-        with urllib.request.urlopen(req,timeout=8) as r:
-            data=json.loads(r.read().decode("utf-8"))
-    except Exception:
-        return {}
-    # Defensive extraction: provider may use typical/median/average and low/high aliases.
-    root=data.get("data",data) if isinstance(data,dict) else {}
-    if isinstance(root,list) and root: root=root[0]
-    if not isinstance(root,dict): return {}
-    def num(*keys):
-        for k in keys:
-            v=root.get(k)
-            try:
-                if v not in (None,""): return float(v)
-            except: pass
-        return None
-    return {
-        "typical":num("typical","typical_price","median","median_price","average","avg_price"),
-        "low":num("low","lowest","min","min_price","lowest_price"),
-        "high":num("high","highest","max","max_price","highest_price"),
-        "count":int(num("count","listing_count","total","vehicles") or 0),
-        "source":"Autoza market stats"
-    }
+    attempts=[]
+    if make and model:
+        attempts.append(base+"?make="+quote(str(make))+"&model="+quote(str(model)))
+    if make:
+        attempts.append(base+"?make="+quote(str(make)))
+    attempts.append(base)
+    for url in attempts:
+        try:
+            req=Request(url,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
+            with urlopen(req,timeout=10) as resp:
+                payload=json.loads(resp.read().decode("utf-8"))
+            vals=_dg_market_stats_values(payload,make,model)
+            if vals.get("typical",0)>250:
+                vals["source_url"]=url
+                return vals
+        except Exception:
+            continue
+    return {}
 
 
 def _comp_num(row,*keys):
