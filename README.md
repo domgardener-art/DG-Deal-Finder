@@ -1,37 +1,17 @@
-# DG Deal Finder Mobile
+# DG Deal Finder V47 — Stable Rollback
 
-A phone-first Streamlit/PWA-style prototype for quickly appraising Facebook Marketplace and other used-car listings.
+V45/V46 introduced a global reliability policy that interfered with the normal selector path and made many/all cars unusable.
 
-## Run it
-1. Install Python 3.10+.
-2. In this folder:
-   `pip install -r requirements.txt`
-3. Run:
-   `streamlit run app.py`
-4. Open the shown local address in your phone browser if your phone and computer are on the same network, or deploy the app to a supported web host.
-5. In Safari/Chrome use **Add to Home Screen** to make it feel like an app.
+V47 rolls the catalogue/selector architecture back to V44, the last stable pre-global-policy build, while retaining the specific verified historical Cayman correction:
+- 2006–2008 Cayman: 2.7L flat-six
+- 2006–2008 Cayman S: 3.4L flat-six
+- later 718 2.0L engines are not valid for a 2008 Cayman
 
-## Marketplace workflow
-Facebook Marketplace → Share → Copy link → open DG Deal Finder → paste link → enter listing details → Analyse.
+No new all-manufacturer filtering experiment has been layered onto this release.
 
-You can also attach a screenshot. V2 stores/displays it during appraisal, but does not OCR it automatically.
+Validation:
+- Python compile passed
+- AST parse passed
+- 100/100 targeted regression assertions passed
 
-## What it calculates
-- all-in cost
-- prep contingency
-- potential contribution
-- ROI
-- maximum buy price
-- DG deal score
-- BUY CANDIDATE / INVESTIGATE / PASS
-- saved deal pipeline
-
-## Important
-The app is decision support only. Verify MOT, provenance, finance/write-off status, vehicle identity, condition and live retail comparables before buying.
-
-## Logical next upgrades
-- DVLA vehicle lookup from registration
-- DVSA MOT history lookup
-- screenshot AI extraction
-- permitted valuation/comparable feeds
-- mobile share-target integration when deployed as a native/PWA wrapper
+This does not claim every historical UK derivative is manufacturer-verified. The priority of V47 is restoring the working application before expanding catalogue coverage again.

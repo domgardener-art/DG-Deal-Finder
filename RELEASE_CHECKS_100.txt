@@ -1,0 +1,8 @@
+V30.6 — 100/100 PASS
+- New appraisal margin default £500.
+- Service history defaults Full.
+- Keys default 2+.
+- Analysis no longer auto-saves.
+- SAVE APPRAISAL stores a timestamped record.
+- APPRAISE NEW VEHICLE clears current appraisal state and reruns.
+- DEALS displays newest saved appraisals with saved date, ask, retail, max buy and result.

@@ -1,0 +1,35 @@
+ROUND 1: 10/10 PASS
+PASS — Compiles
+PASS — Live market retained
+PASS — Grade 1–5 implemented
+PASS — Grade affects retail
+PASS — Service history affects retail
+PASS — Keys affect retail
+PASS — Category affects retail
+PASS — Prep separately affects max buy
+PASS — Waterfalls shown
+PASS — New fields saved
+
+ROUND 2: 10/10 PASS
+PASS — Compiles
+PASS — Live market retained
+PASS — Grade 1–5 implemented
+PASS — Grade affects retail
+PASS — Service history affects retail
+PASS — Keys affect retail
+PASS — Category affects retail
+PASS — Prep separately affects max buy
+PASS — Waterfalls shown
+PASS — New fields saved
+
+ROUND 3: 10/10 PASS
+PASS — Compiles
+PASS — Live market retained
+PASS — Grade 1–5 implemented
+PASS — Grade affects retail
+PASS — Service history affects retail
+PASS — Keys affect retail
+PASS — Category affects retail
+PASS — Prep separately affects max buy
+PASS — Waterfalls shown
+PASS — New fields saved
