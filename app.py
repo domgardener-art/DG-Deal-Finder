@@ -701,8 +701,15 @@ with tabs[0]:
         service_history=c1.selectbox("Service history",["Unknown","Full","Part","None"])
         keys=c2.selectbox("Keys",["Unknown","2+ keys","1 key"])
         c1,c2=st.columns(2)
-        provenance=c1.selectbox("Finance / write-off / theft check",["Not checked","Clear","Issue found"])
+        provenance=c1.selectbox("Finance / theft check",["Not checked","Clear","Issue found"])
         v5c=c2.selectbox("V5C",["Not checked","Present & matches","Missing / mismatch"])
+        c1,c2=st.columns(2)
+        insurance_category=c1.selectbox("Insurance category",["Clear / none known","Cat N","Cat S","Other / unsure"])
+        default_cat_adjust={"Clear / none known":0,"Cat N":10,"Cat S":20,"Other / unsure":15}[insurance_category]
+        category_discount=c2.number_input("Category retail adjustment (%)",0,50,default_cat_adjust,1,
+            help="Editable appraisal assumption. This is not a universal market discount.")
+        condition_adjustment=st.number_input("Condition / spec retail adjustment (£)",-5000,5000,0,50,
+            help="Negative for poorer condition/spec; positive for exceptional condition/spec.")
         notes=st.text_area("Notes",value=st.session_state.get("imp_desc",""),placeholder="History, MOT, tyres, damage, keys…")
         risk,risk_reasons=analyse_risk(st.session_state.get("selected_year",2020),mileage,st.session_state.get("selected_make",""),st.session_state.get("selected_model",""),notes)
         mm=st.session_state.get("market_estimate")
@@ -727,17 +734,15 @@ with tabs[0]:
             risk="High"; risk_reasons.append("V5C missing or details mismatch")
         elif v5c=="Not checked":
             risk_reasons.append("V5C not verified")
-        mot_saved=st.session_state.get("mot_lookup",{})
-        if mot_saved.get("data"):
-            mr=mot_risk_summary(mot_saved["data"])
-            if mr["dangerous"] or mr["mileage_warning"]:
-                risk="High"
-            elif mr["fails"]>=2 and risk=="Low":
-                risk="Medium"
-            if mr["mileage_warning"]: risk_reasons.append("MOT mileage history needs investigation")
-            if mr["dangerous"]: risk_reasons.append("Dangerous MOT defect recorded")
-            repeated=[k for k,v in mr["recurring"].items() if v>=2]
-            if repeated: risk_reasons.append("Recurring MOT themes: "+", ".join(repeated))
+        if insurance_category=="Cat S":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Cat S recorded — structural repair history must be assessed and retail adjusted")
+        elif insurance_category=="Cat N":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Cat N recorded — retail adjusted")
+        elif insurance_category=="Other / unsure":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Insurance category needs verification")
         st.markdown(f"**DG risk analysis: {risk}**")
         st.caption(" · ".join(risk_reasons))
         if st.session_state.get("scan_year") or st.session_state.get("scan_fuel") or st.session_state.get("scan_gearbox"):
@@ -748,27 +753,46 @@ with tabs[0]:
         max_buy=max(0,retail-prep-fees-contingency-target_margin)
         verdict="BUY" if margin>=target_margin and roi>=st.session_state.min_roi and risk!="High" else ("RESEARCH" if margin>=target_margin*.6 and risk!="High" else "PASS")
         klass={"BUY":"good","RESEARCH":"warn","PASS":"bad"}[verdict]
-        st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles</div><span class="chip {klass}">{verdict} · DG SCORE {score}/100</span></div>',unsafe_allow_html=True)
-        a,b=st.columns(2); a.metric("Estimated retail",f"£{retail:,.0f}"); b.metric("Potential margin",f"£{margin:,.0f}")
-        a,b=st.columns(2); a.metric("Maximum buy",f"£{max_buy:,.0f}"); b.metric("ROI",f"{roi:.1f}%")
+        # Turn the raw live-market average into a recommendation for THIS car.
+        market_average=float(retail)
+        recommended_retail=max(0, market_average*(1-category_discount/100.0)+condition_adjustment)
+        max_buy=max(0,recommended_retail-prep-fees-contingency-target_margin)
+        target_buy=max(0,max_buy-250)
+        opening_offer=max(0,target_buy-250)
+        contribution_at_ask=recommended_retail-(asking+prep+fees+contingency)
+        roi_at_ask=(contribution_at_ask/(asking+prep+fees+contingency)*100) if (asking+prep+fees+contingency)>0 else 0
+
+        st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}</div></div>',unsafe_allow_html=True)
+        st.markdown(f"""<div class="card" style="border:2px solid #111827">
+        <div class="label">WHAT TO DO</div>
+        <div class="meta">Open at</div><div class="car">£{opening_offer:,.0f}</div>
+        <div class="meta">Aim to buy at</div><div class="car">£{target_buy:,.0f}</div>
+        <div class="meta">Do not pay more than</div><div class="car">£{max_buy:,.0f}</div>
+        <hr>
+        <div class="meta">Advertise at</div><div class="car">£{recommended_retail:,.0f}</div>
+        </div>""",unsafe_allow_html=True)
+
+        st.markdown('<div class="section">Why that retail price?</div>',unsafe_allow_html=True)
+        a,b=st.columns(2); a.metric("Live market average",f"£{market_average:,.0f}"); b.metric("DG recommended retail",f"£{recommended_retail:,.0f}")
+        st.caption(f"{insurance_category}: -{category_discount}% · Condition/spec adjustment: £{condition_adjustment:+,.0f}. Category adjustment is editable and is not claimed as a universal market rule.")
+        if asking:
+            if asking<=target_buy:
+                st.success(f"Seller asking £{asking:,.0f}: inside DG target. Estimated contribution at asking: £{contribution_at_ask:,.0f}.")
+            elif asking<=max_buy:
+                st.warning(f"Seller asking £{asking:,.0f}: workable, but negotiate toward £{target_buy:,.0f}. Estimated contribution at asking: £{contribution_at_ask:,.0f}.")
+            else:
+                st.error(f"Seller asking £{asking:,.0f}: above DG maximum of £{max_buy:,.0f}. Negotiate down or leave it.")
+        a,b=st.columns(2); a.metric("Contribution at asking",f"£{contribution_at_ask:,.0f}"); b.metric("ROI at asking",f"{roi_at_ask:.1f}%")
 
         st.markdown('<div class="section">Deal resilience</div>',unsafe_allow_html=True)
-        downside_retail=max(0,retail-500)
+        downside_retail=max(0,recommended_retail-500)
         downside_prep=prep+500
         stress_retail=downside_retail-(asking+prep+fees+contingency)
-        stress_prep=retail-(asking+downside_prep+fees+contingency)
+        stress_prep=recommended_retail-(asking+downside_prep+fees+contingency)
         stress_both=downside_retail-(asking+downside_prep+fees+contingency)
         break_even=asking+prep+fees+contingency
         q1,q2=st.columns(2); q1.metric("Retail -£500",f"£{stress_retail:,.0f}"); q2.metric("Prep +£500",f"£{stress_prep:,.0f}")
         q1,q2=st.columns(2); q1.metric("Both hit",f"£{stress_both:,.0f}"); q2.metric("Break-even retail",f"£{break_even:,.0f}")
-
-        strong_buy=max(0,max_buy-250)
-        thin_ceiling=max_buy+250
-        st.markdown(f"""<div class="card"><div class="label">DG buying range</div>
-        <div class="meta"><b>Strong buy:</b> up to £{strong_buy:,.0f}<br>
-        <b>Target buy:</b> £{strong_buy:,.0f}–£{max_buy:,.0f}<br>
-        <b>Thin / negotiate hard:</b> £{max_buy:,.0f}–£{thin_ceiling:,.0f}<br>
-        <b>Above £{thin_ceiling:,.0f}:</b> does not leave enough room for your current target economics.</div></div>""",unsafe_allow_html=True)
 
         valuation_risk="High" if not mm else ("Medium" if mm.get("count",0)<5 else "Low")
         provenance_risk="High" if provenance=="Issue found" or v5c=="Missing / mismatch" else ("Low" if provenance=="Clear" and v5c=="Present & matches" else "Unknown")
