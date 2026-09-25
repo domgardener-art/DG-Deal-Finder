@@ -836,7 +836,9 @@ with tabs[0]:
             selected_model=manual_model.strip()
     if selected_model=="— Choose model —": selected_model=""
 
-    # Engine/spec cascade. Do NOT use trim text as a model override.
+    # Spec-first compatible cascade:
+    # Make -> Year -> Model -> Spec -> Engine -> Fuel -> Gearbox.
+    # Each later dropdown is restricted to combinations observed in the current advert sample.
     selector_rows=[]
     selector_error=""
     if selected_make and selected_model:
@@ -844,36 +846,87 @@ with tabs[0]:
             selector_rows=autoza_comparables(selected_make,selected_model,selected_year,50)
         except Exception as e:
             selector_error=str(e)
+
     engines,fuels,gearboxes,derivatives,choice_sources=robust_vehicle_choices(
         selected_make,selected_model,selected_year,selector_rows
     ) if selected_make and selected_model else ([],[],[],[],[])
 
-    c1,c2=st.columns(2)
-    selected_engine=c1.selectbox("Engine / powertrain",["— Choose engine —"]+engines,disabled=not bool(selected_model))
-    selected_fuel=c2.selectbox("Fuel",["— Choose fuel —"]+fuels,disabled=not bool(selected_model))
-    c1,c2=st.columns(2)
-    selected_gearbox=c1.selectbox("Gearbox",["— Choose gearbox —"]+gearboxes,disabled=not bool(selected_model))
-    selected_spec=c2.selectbox("Spec / derivative",["— Choose spec —"]+derivatives,disabled=not bool(selected_model))
+    def _norm(v):
+        return str(v or "").strip().lower()
 
-    # Convert placeholders to blank values for matching/calculation.
-    if selected_engine.startswith("—"): selected_engine=""
-    if selected_fuel.startswith("—"): selected_fuel=""
-    if selected_gearbox.startswith("—"): selected_gearbox=""
+    def _row_text(row):
+        return " ".join(str(row.get(k,"") or "") for k in
+                        ("title","variant","derivative","trim","spec","description","engine","engine_size",
+                         "fuel","fuel_type","transmission","gearbox")).lower()
+
+    def _compatible_rows(rows, spec="", engine="", fuel="", gearbox=""):
+        result=[]
+        for row in rows or []:
+            text=_row_text(row)
+            if spec and _norm(spec) not in text: continue
+            if engine and _norm(engine).replace("l","") not in text.replace("l",""): continue
+            if fuel and _norm(fuel) not in text: continue
+            if gearbox:
+                g=_norm(gearbox)
+                if g=="automatic" and not any(x in text for x in ("automatic","auto","dsg","s tronic","cvt")): continue
+                elif g=="manual" and "manual" not in text: continue
+                elif g not in ("automatic","manual") and g not in text: continue
+            result.append(row)
+        return result
+
+    def _choices_from_rows(rows):
+        if not rows: return [],[],[],[]
+        return build_vehicle_choices(rows)
+
+    # Spec comes immediately after model.
+    selected_spec=st.selectbox(
+        "Spec / derivative",
+        ["— Choose spec —"]+derivatives,
+        disabled=not bool(selected_model),
+        help="Choose the derivative first. Engine, fuel and gearbox choices below are then narrowed to compatible versions where the live data supports it."
+    )
     if selected_spec.startswith("—"): selected_spec=""
 
-    with st.expander("Exact engine/spec not listed?"):
-        manual_engine=st.text_input("Engine override",placeholder="e.g. 2.0L")
+    with st.expander("Exact spec not listed?"):
         manual_spec=st.text_input("Spec override",placeholder="e.g. vRS")
-        if manual_engine.strip(): selected_engine=manual_engine.strip()
         if manual_spec.strip(): selected_spec=manual_spec.strip()
+
+    # Restrict subsequent choices using live rows for the chosen spec.
+    spec_rows=_compatible_rows(selector_rows,spec=selected_spec) if selected_spec else selector_rows
+    live_engines,live_fuels,live_gearboxes,_=_choices_from_rows(spec_rows)
+
+    # If live adverts expose compatibility, use ONLY those values. If they do not,
+    # retain the broader fallback list rather than inventing compatibility.
+    engine_options=live_engines if live_engines else engines
+    selected_engine=st.selectbox("Engine / powertrain",["— Choose engine —"]+engine_options,
+                                 disabled=not bool(selected_model))
+    if selected_engine.startswith("—"): selected_engine=""
+
+    engine_rows=_compatible_rows(spec_rows,engine=selected_engine) if selected_engine else spec_rows
+    _,engine_fuels,engine_gearboxes,_=_choices_from_rows(engine_rows)
+    fuel_options=engine_fuels if engine_fuels else live_fuels if live_fuels else fuels
+    selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,
+                               disabled=not bool(selected_model))
+    if selected_fuel.startswith("—"): selected_fuel=""
+
+    fuel_rows=_compatible_rows(engine_rows,fuel=selected_fuel) if selected_fuel else engine_rows
+    _,_,fuel_gearboxes,_=_choices_from_rows(fuel_rows)
+    gearbox_options=fuel_gearboxes if fuel_gearboxes else engine_gearboxes if engine_gearboxes else live_gearboxes if live_gearboxes else gearboxes
+    selected_gearbox=st.selectbox("Gearbox",["— Choose gearbox —"]+gearbox_options,
+                                  disabled=not bool(selected_model))
+    if selected_gearbox.startswith("—"): selected_gearbox=""
+
+    with st.expander("Exact engine not listed?"):
+        manual_engine=st.text_input("Engine override",placeholder="e.g. 2.0L")
+        if manual_engine.strip(): selected_engine=manual_engine.strip()
 
     if selected_make and selected_model:
         if choice_sources:
             st.caption("Vehicle choices: "+", ".join(choice_sources)+".")
-        if not engines:
-            st.warning("No engine list is available for this exact model/year. Use Engine override rather than guessing.")
-        if not derivatives:
-            st.warning("No spec list is available for this exact model/year. Use Spec override rather than guessing.")
+        if selected_spec and spec_rows:
+            st.caption(f"Compatibility filter: {len(spec_rows)} current advert(s) support the selected spec before engine/fuel/gearbox filtering.")
+        elif selected_spec and not spec_rows:
+            st.warning("No current advert in the sample confirms this exact spec combination. DG will not claim the remaining choices are derivative-verified.")
     cat_mileage=st.number_input("Mileage",0,500000,0,1000,key="catalogue_mileage")
     reg_manual=st.text_input("Registration (optional)",placeholder="e.g. DA59 XDG")
     if selected_make and selected_model:
