@@ -881,6 +881,21 @@ def matches_vehicle_choices(car,engine="",fuel="",gearbox="",spec=""):
         if words and sum(w in txt for w in words) < max(1,min(3,len(words))): return False
     return True
 
+def comparable_vehicle_label(car, fallback_make="", fallback_model=""):
+    """Build a vehicle label without ever using dealer/seller/business names as the car title."""
+    make=_text(car,"make","manufacturer","marque") or str(fallback_make or "").strip()
+    model=_text(car,"model","model_name","modelName") or str(fallback_model or "").strip()
+    derivative=extract_derivative(car)
+    engine=extract_engine(car)
+    fuel=extract_fuel(car)
+    gearbox=extract_gearbox(car)
+    parts=[]
+    for x in (make,model,derivative,engine,fuel,gearbox):
+        x=str(x or "").strip()
+        if x and x.lower() not in [p.lower() for p in parts]:
+            parts.append(x)
+    return " ".join(parts) if parts else "Comparable vehicle"
+
 def estimate_market_from_comps(rows, year, mileage):
     """Average current asking price from relevant for-sale listings.
     Filters obvious mismatches, then uses year/mileage proximity. No sold-price claim."""
@@ -1218,43 +1233,45 @@ with tabs[0]:
         selected_make,selected_model,selected_year,selector_rows
     ) if selected_make and selected_model else ([],[],[],[],[])
 
-    if taxonomy:
-        _,tax_specs,_,_,_=taxonomy_options(taxonomy)
-        spec_options=tax_specs
-        taxonomy_verified=True
+    taxonomy_verified=bool(taxonomy)
+
+    # Fuel first: this immediately removes petrol/diesel/hybrid/EV derivatives and engines
+    # that cannot belong to the selected fuel type for the exact chosen year.
+    if taxonomy_verified:
+        _,_,_,fuel_options,_=taxonomy_options(taxonomy)
     else:
+        fuel_options=fuels
+    selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,disabled=not bool(selected_model))
+    if selected_fuel.startswith("—"): selected_fuel=""
+
+    if taxonomy_verified:
+        fuel_rows,spec_options,_,_,_=taxonomy_options(taxonomy,fuel=selected_fuel)
+    else:
+        fuel_rows=[]
         spec_options=derivatives
-        taxonomy_verified=False
 
     selected_spec=st.selectbox("Spec / derivative",["— Choose spec —"]+spec_options,
         disabled=not bool(selected_model),
-        help="Spec is selected first. When the free taxonomy has this vehicle/year, all later choices are restricted to valid combinations.")
+        help="Fuel is selected first, then DG restricts derivative and engine choices to the selected year where verified compatibility data is available.")
     if selected_spec.startswith("—"): selected_spec=""
-    st.caption("Spec first → DG narrows engine, fuel and gearbox for the selected year/derivative where verified compatibility data is available.")
+    st.caption("Fuel → spec → engine → gearbox. Verified taxonomy choices are restricted to the exact selected year.")
 
     with st.expander("Exact spec not listed?"):
         manual_spec=st.text_input("Spec override",placeholder="e.g. vRS")
         if manual_spec.strip(): selected_spec=manual_spec.strip()
 
-    if taxonomy_verified and selected_spec:
-        spec_rows,_,engine_options,_,_=taxonomy_options(taxonomy,spec=selected_spec)
-    elif taxonomy_verified:
-        spec_rows=taxonomy
-        _,_,engine_options,_,_=taxonomy_options(taxonomy)
+    if taxonomy_verified:
+        spec_rows,_,engine_options,_,_=taxonomy_options(taxonomy,spec=selected_spec,fuel=selected_fuel)
     else:
         spec_rows=[]
-        engine_options=engines
+        # With no verified taxonomy, narrow live-advert engines by selected fuel where possible.
+        live_fuel_rows=[c for c in selector_rows if (not selected_fuel or extract_fuel(c).lower()==selected_fuel.lower())]
+        live_engines,_,_,_=build_vehicle_choices(live_fuel_rows)
+        engine_options=live_engines if live_engines else engines
 
     selected_engine=st.selectbox("Engine / powertrain",["— Choose engine —"]+engine_options,
         disabled=not bool(selected_model))
     if selected_engine.startswith("—"): selected_engine=""
-
-    if taxonomy_verified:
-        eng_rows,_,_,fuel_options,_=taxonomy_options(taxonomy,spec=selected_spec,engine=selected_engine)
-    else:
-        fuel_options=fuels
-    selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,disabled=not bool(selected_model))
-    if selected_fuel.startswith("—"): selected_fuel=""
 
     if taxonomy_verified:
         final_rows,_,_,_,gearbox_options=taxonomy_options(
@@ -1721,7 +1738,7 @@ with tabs[0]:
                         price=_num(car,"price","asking_price","askingPrice") or 0
                         miles=_num(car,"mileage","miles","odometer") or 0
                         yr=int(_num(car,"year","registration_year","registrationYear") or 0)
-                        title_txt=_pick(car,"title","vehicle","name","derivative","description") or "Comparable vehicle"
+                        title_txt=comparable_vehicle_label(car,selected_make,selected_model)
                         st.markdown(f"**{i}. {yr or 'Year n/a'} {title_txt}**")
                         st.caption(f"Asking £{price:,.0f}" + (f" · {int(miles):,} miles" if miles else ""))
         st.caption("Current asking-price evidence only. Asking prices are not achieved sale prices; historical trends only appear once real observations have been saved.")
