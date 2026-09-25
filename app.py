@@ -843,10 +843,19 @@ def extract_engine(car):
     return ""
 
 def extract_derivative(car):
-    title=_text(car,"derivative","title","vehicle","name")
-    if not title: return ""
-    # Strip leading make/model/year where possible, but retain the useful engine/trim/gearbox phrase.
+    """Extract trim/spec only; never fall back to advert/dealer titles."""
+    # Structured derivative/trim/spec fields are safe sources for this dropdown.
+    title=_text(car,"derivative","trim","spec","variant")
+    if not title:
+        return ""
     title=re.sub(r"^\s*(19|20)\d{2}\s+","",title).strip()
+    # Defensive dealer-name filter for messy upstream feeds.
+    low=title.lower()
+    dealer_terms=(" motors"," motors ltd"," motor company"," vehicle sales"," automotive",
+                  " car sales"," cars ltd"," dealership"," garage")
+    dealer_exact={"vanacar"}
+    if low in dealer_exact or any(term in low for term in dealer_terms):
+        return ""
     return title
 
 def build_vehicle_choices(rows):
