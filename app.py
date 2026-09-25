@@ -1509,10 +1509,55 @@ def dg_multi_signal_valuation(rows, target_year, target_mileage):
             "mileage_slope":slope,"confidence":confidence,
             "evidence":"DG multi-signal valuation (median + mileage + market position)"}
 
+
+def dg_progressive_valuation(rows, target_year, target_mileage):
+    """Try strict ±1-year evidence first, then progressively broaden only when needed."""
+    rows=rows or []
+    # Level A: target year ±1 (preferred)
+    strict=dg_multi_signal_valuation(rows,target_year,target_mileage)
+    if strict.get("value",0)>0:
+        strict["level"]="A"
+        strict["evidence"]="Primary comparables: target year ±1"
+        return strict
+
+    # Level B: target year ±2. This is rescue evidence, clearly labelled.
+    within2=[]
+    for r in rows:
+        try:
+            ry=int(r.get("year") or r.get("registrationYear") or r.get("registration_year") or 0)
+        except Exception:
+            ry=0
+        if ry and abs(ry-int(target_year))<=2:
+            rr=dict(r); rr["year"]=int(target_year)  # pass cohort into signal engine after explicit filtering
+            within2.append(rr)
+    b=dg_multi_signal_valuation(within2,target_year,target_mileage)
+    if b.get("value",0)>0:
+        b["level"]="B"; b["confidence"]="Medium" if b.get("confidence")=="High" else b.get("confidence","Low")
+        b["evidence"]="Rescue comparables: target year ±2"
+        return b
+
+    # Level C: broader same-model rows already supplied by Autoza cohort logic.
+    # Cap to ±4 years so an old/new generation cannot dominate.
+    within4=[]
+    for r in rows:
+        try:
+            ry=int(r.get("year") or r.get("registrationYear") or r.get("registration_year") or 0)
+        except Exception:
+            ry=0
+        if ry and abs(ry-int(target_year))<=4:
+            rr=dict(r); rr["year"]=int(target_year)
+            within4.append(rr)
+    c=dg_multi_signal_valuation(within4,target_year,target_mileage)
+    if c.get("value",0)>0:
+        c["level"]="C"; c["confidence"]="Low"
+        c["evidence"]="Broad rescue comparables: same-model evidence within ±4 years"
+        return c
+    return {}
+
 def robust_market_value(rows, year, mileage, make="", model="", asking=0):
     """Evidence ladder: individual adverts first, then free aggregate market stats.
     Never manufactures a £0 valuation."""
-    multi=dg_multi_signal_valuation(rows,year,mileage)
+    multi=dg_progressive_valuation(rows,year,mileage)
     if multi.get("value",0)>0:
         return {"value":multi["value"],"low":multi["low"],"high":multi["high"],
                 "count":multi["count"],"confidence":multi["confidence"],
@@ -2467,6 +2512,23 @@ with tabs[0]:
         opening_offer_display=f"£{opening_offer:,.0f}" if opening_offer>0 else "N/A"
         contribution_at_ask=recommended_retail-(asking+prep+fees+detected_repair_cost+effective_mot_history_cost+contingency)
         roi_at_ask=(contribution_at_ask/(asking+prep+fees+detected_repair_cost+contingency)*100) if (asking+prep+fees+detected_repair_cost+contingency)>0 else 0
+
+        # V54 canonical no-zero guard immediately before result rendering.
+        try:
+            _dg_render_market=float(market_retail or 0)
+        except Exception:
+            _dg_render_market=0.0
+        if _dg_render_market <= 0:
+            st.error("NO USABLE MARKET VALUATION — DG has not produced a £0 valuation.")
+            st.caption("Free market evidence was insufficient after progressively widening the comparable cohort. Enter a retail estimate to continue.")
+            _dg_manual_render=st.number_input("Retail estimate to use (£)",min_value=0,max_value=250000,value=int(asking or 0),step=100,key="v54_manual_retail")
+            if _dg_manual_render > 0:
+                market_retail=float(_dg_manual_render)
+                st.session_state["market_retail"]=market_retail
+                st.info("Using your manual retail estimate. This is not labelled as market-derived evidence.")
+            else:
+                st.session_state["current_appraisal_ready"]=False
+                st.stop()
 
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}</div></div>',unsafe_allow_html=True)
         st.markdown(f"""<div class="card" style="border:2px solid #111827">
