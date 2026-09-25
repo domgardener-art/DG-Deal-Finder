@@ -96,18 +96,33 @@ def scaled_appraisal_adjustments(year, market_value, condition_grade, service_hi
 
 
 def safe_market_snapshot(market, fallback_retail=0):
-    """Normalize result-market state without recursion."""
-    try: fallback=float(fallback_retail or 0)
-    except (TypeError,ValueError): fallback=0.0
-    if not isinstance(market,dict): return {"count":0,"low":fallback,"high":fallback,"rows":[]}
+    """Return a safe market dict while preserving live-market metadata."""
+    try:
+        fallback=float(fallback_retail or 0)
+    except (TypeError,ValueError):
+        fallback=0.0
+    if not isinstance(market,dict):
+        return {"count":0,"low":fallback,"high":fallback,"retail":fallback,"average":fallback,"rows":[]}
+    snap=dict(market)
     def num(key,default):
-        try: return float(market.get(key,default) or default)
-        except (TypeError,ValueError,AttributeError): return float(default)
-    try: count=int(market.get("count",0) or 0)
-    except (TypeError,ValueError,AttributeError): count=0
-    rows=market.get("rows",[])
-    if not isinstance(rows,list): rows=[]
-    return {"count":max(0,count),"low":num("low",fallback),"high":num("high",fallback),"rows":rows}
+        try:
+            return float(snap.get(key,default) or default)
+        except (TypeError,ValueError,AttributeError):
+            return float(default)
+    try:
+        count=int(snap.get("count",0) or 0)
+    except (TypeError,ValueError,AttributeError):
+        count=0
+    rows=snap.get("rows",[])
+    if not isinstance(rows,list):
+        rows=[]
+    snap["count"]=max(0,count)
+    snap["low"]=num("low",fallback)
+    snap["high"]=num("high",fallback)
+    snap["retail"]=num("retail",fallback)
+    snap["average"]=num("average",snap["retail"])
+    snap["rows"]=rows
+    return snap
 
 def weighted_mot_history_cost(mot_notes_cost, mot_months):
     """If more than 4 months MOT remains, retain only 15% of prior-MOT note cost weighting."""
@@ -1494,6 +1509,46 @@ with tabs[0]:
             except Exception:
                 fresh_market=None
         market = safe_market_snapshot(fresh_market if fresh_market else st.session_state.get("market_estimate"))
+
+        # Rebuild risk AFTER the fresh market lookup. The old flow could mark the
+        # whole deal High simply because no market snapshot existed before ANALYSE was tapped.
+        vehicle_risk,vehicle_risk_reasons=analyse_risk(
+            st.session_state.get("selected_year",2020),mileage,
+            st.session_state.get("selected_make",""),st.session_state.get("selected_model",""),
+            " ".join(x for x in [notes,source_advert] if x)
+        )
+        risk=vehicle_risk
+        risk_reasons=list(vehicle_risk_reasons)
+        if description_risk.get("level")=="High":
+            risk="High"; risk_reasons.append("Seller description contains high-risk wording")
+        elif description_risk.get("level")=="Medium" and risk=="Low":
+            risk="Medium"; risk_reasons.append("Seller description contains cautionary wording")
+        if description_risk.get("conflicts"):
+            risk="High"; risk_reasons.append("Seller description conflicts with confirmed appraisal inputs")
+        if service_history=="None" and risk=="Low":
+            risk="Medium"; risk_reasons.append("No service history")
+        if provenance=="Issue found":
+            risk="High"; risk_reasons.append("Provenance check found an issue")
+        elif provenance=="Not checked" and risk=="Low":
+            risk="Medium"; risk_reasons.append("Finance/write-off/theft provenance not checked")
+        if v5c=="Missing / mismatch":
+            risk="High"; risk_reasons.append("V5C missing or details mismatch")
+        if insurance_category=="Cat S":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Cat S structural repair history requires verification")
+        elif insurance_category=="Cat N":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Cat N repair quality/provenance requires verification")
+        elif insurance_category=="Cat C (legacy)":
+            risk="High"; risk_reasons.append("Legacy Cat C repair quality/provenance requires careful verification")
+        elif insurance_category=="Cat D (legacy)":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Legacy Cat D repair quality/provenance requires verification")
+        elif insurance_category in ("Cat A","Cat B"):
+            risk="High"; risk_reasons.append(f"{insurance_category} is not suitable for normal retail-road-car appraisal")
+        elif insurance_category=="Other / unsure" and risk=="Low":
+            risk="Medium"; risk_reasons.append("Insurance category needs verification")
+
         live_retail=float(st.session_state.get("market_retail",0) or 0) if fresh_market else 0.0
         appraisal_retail=float(retail or live_retail or 0)
         effective_mot_history_cost,mot_history_weight=weighted_mot_history_cost(mot_notes_cost,mot_months)
@@ -1610,8 +1665,8 @@ with tabs[0]:
         st.markdown('<div class="section">Quick risk check</div>',unsafe_allow_html=True)
         # Component risks are derived here so the UI cannot reference undefined legacy names.
         # Self-contained component risks: use only values definitely available in this result branch.
-        mechanical_risk = "High" if risk=="High" else ("Medium" if risk=="Medium" else "Low")
-        comparable_count = int(safe_market_snapshot(market).get("count", 0) or 0) if isinstance(market, dict) else 0
+        mechanical_risk = "High" if vehicle_risk=="High" else ("Medium" if vehicle_risk=="Medium" else "Low")
+        comparable_count = int(result_market.get("count",0) or 0)
         valuation_risk = "High" if comparable_count==0 else ("Medium" if comparable_count<5 else "Low")
         provenance_risk = "High" if provenance=="Issue found" or v5c=="Missing / mismatch" else ("Medium" if provenance=="Not checked" or v5c=="Not checked" else "Low")
         commercial_risk="Low" if stress_both>=target_margin*0.5 else ("Medium" if stress_both>0 else "High")
@@ -1634,16 +1689,35 @@ with tabs[0]:
             st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} DG recommended retail." if delta else "Seller asking matches DG recommended retail.")
 
         st.markdown('<div class="section">Market evidence</div>',unsafe_allow_html=True)
-        comparable_count=int(safe_market_snapshot(market).get("count",0) or 0)
-        if comparable_count<=1:
+        comparable_count=int(result_market.get("count",0) or 0)
+        if comparable_count==0:
+            st.error("No close live comparables found. DG cannot give the live valuation normal confidence.")
+        elif comparable_count==1:
             st.warning("Low market confidence · 1 close comparable. Treat retail as provisional.")
         elif comparable_count<5:
-            st.warning(f"Limited market evidence: {comparable_count} close comparables. Useful as a guide, but not a strong market sample.")
+            st.warning(f"Limited market evidence · {comparable_count} close comparables. Useful as a guide, but not a strong sample.")
         else:
-            st.success(f"Market evidence: {comparable_count} close comparables gives a more useful current asking-price sample.")
-        st.caption("Current asking-price evidence only. Historical trends appear once enough real observations have been saved.")
+            st.success(f"Market evidence · {comparable_count} close comparables.")
+        if comparable_count:
+            low=float(result_market.get("low",0) or 0)
+            high=float(result_market.get("high",0) or 0)
+            if comparable_count==1:
+                st.write(f"Current comparable asking price: **£{low:,.0f}**")
+            else:
+                st.write(f"Observed asking range: **£{low:,.0f}–£{high:,.0f}**")
+            rows=result_market.get("rows",[])
+            if rows:
+                with st.expander(f"View the {min(len(rows),10)} comparable advert(s) used"):
+                    for i,car in enumerate(rows[:10],1):
+                        price=_num(car,"price","asking_price","askingPrice") or 0
+                        miles=_num(car,"mileage","miles","odometer") or 0
+                        yr=int(_num(car,"year","registration_year","registrationYear") or 0)
+                        title_txt=_pick(car,"title","vehicle","name","derivative","description") or "Comparable vehicle"
+                        st.markdown(f"**{i}. {yr or 'Year n/a'} {title_txt}**")
+                        st.caption(f"Asking £{price:,.0f}" + (f" · {int(miles):,} miles" if miles else ""))
+        st.caption("Current asking-price evidence only. Asking prices are not achieved sale prices; historical trends only appear once real observations have been saved.")
 
-        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}])
+        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}])
         if DATA.exists(): row=pd.concat([pd.read_csv(DATA),row],ignore_index=True)
         row.to_csv(DATA,index=False)
     st.markdown('</div>',unsafe_allow_html=True)
