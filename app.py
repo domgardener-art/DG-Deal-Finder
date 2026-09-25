@@ -1,3 +1,5 @@
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 import streamlit as st
 import pandas as pd
 from pathlib import Path
