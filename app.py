@@ -31,32 +31,34 @@ def mot_time_adjustment(months_remaining):
     return -350
 
 
-def dg_appraisal_overview(market_average,recommended_retail,asking,max_buy,category,category_adjustment,
-                          condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,
-                          prep,other_costs,contingency,target_margin,comp_count,market_low,market_high):
-    notes=[]
-    if asking>max_buy:
-        notes.append(f"BUYING POSITION — Seller is £{asking-max_buy:,.0f} above DG's maximum buy. Current assumptions do not leave the target margin.")
+def dg_buyer_overview(market_average,recommended_retail,asking,max_buy,category,category_adjustment,condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,prep,other_costs,contingency,target_margin,comp_count,market_low,market_high):
+    out=[]
+    gap=asking-max_buy
+    out.append(("Buying position",f"Seller is £{abs(gap):,.0f} {'above' if gap>0 else 'inside'} DG's maximum buy. "+("At the current assumptions the asking price does not leave the target contribution." if gap>0 else "This leaves room before unrecorded defects.")))
+    if category!="Clear / none known": out.append(("Insurance category",f"{category} already reduces retail by £{abs(category_adjustment):,.0f}. DG view: verify repair quality/provenance and expect a smaller buyer pool than an equivalent clear-history car."))
+    out.append(("MOT",f"Entered notes flag {', '.join(mot_analysis.get('items',[])) or 'no automatically recognised repair category'}. Current advisory allowance £{mot_notes_cost:,.0f}. DG view: confirm actual repair prices before buying."))
+    motview="plan on a fresh MOT before retail" if mot_months<3 else ("stock time may leave it needing a fresh MOT" if mot_months<6 else "no major short-MOT concern from term alone")
+    out.append(("MOT remaining",f"About {mot_months} month(s): {motview}."))
+    out.append(("Inputs",f"Condition {condition_grade}/5 · service history {service_history} · keys {keys} · prep £{prep:,.0f} · other costs £{other_costs:,.0f} · contingency £{contingency:,.0f}."))
+    if comp_count<=1: out.append(("Market / stock risk",f"Only {comp_count} close comparable is available. There is not enough evidence for a reliable range or genuine days-to-sell estimate."))
+    elif comp_count<5: out.append(("Market / stock risk",f"Only {comp_count} close comparables. DG view: valuation and exit-speed confidence are low; no genuine days-to-sell figure is available."))
     else:
-        notes.append(f"BUYING POSITION — Seller is £{max_buy-asking:,.0f} inside DG's maximum buy before unrecorded defects.")
-    if category!="Clear / none known":
-        notes.append(f"INSURANCE CATEGORY — {category}; £{abs(category_adjustment):,.0f} is already deducted from retail. DG view: verify repair quality/provenance and expect a smaller buyer pool than an equivalent clear-history car.")
-    if mot_analysis.get("items"):
-        notes.append(f"MOT — Entered notes flag {', '.join(mot_analysis['items'])}; current allowance £{mot_notes_cost:,.0f}. DG view: price the actual work before buying.")
-    else:
-        notes.append("MOT — No recognised cost item was extracted. That does not mean the MOT is risk-free.")
-    if mot_months<3: notes.append(f"MOT TERM — About {mot_months} month(s) remain. DG view: plan on a fresh MOT before retail.")
-    elif mot_months<6: notes.append(f"MOT TERM — About {mot_months} months remain. DG view: factor stock time into whether a fresh MOT will be needed.")
-    else: notes.append(f"MOT TERM — About {mot_months} months remain; no major short-MOT concern on that input alone.")
-    notes.append(f"INPUTS — Condition {condition_grade}/5; service history {service_history}; keys {keys}; prep £{prep:,.0f}; other costs £{other_costs:,.0f}; contingency £{contingency:,.0f}.")
-    if comp_count<5:
-        notes.append(f"STOCK / EXIT RISK — Only {comp_count} close current comparable(s). DG view: low confidence on both valuation and stock turn. No genuine days-to-sell figure is available from this data.")
-    else:
-        spread=max(0,market_high-market_low); pct=(spread/market_average*100) if market_average else 0
-        label="higher" if pct>30 else "moderate" if pct>15 else "lower"
-        notes.append(f"STOCK / EXIT RISK — {comp_count} close comparables with roughly {pct:.0f}% asking-price spread. DG view: pricing/exit uncertainty is {label}. This is a proxy, not measured days-to-sell.")
-    notes.append(f"RETAIL — Live average £{market_average:,.0f}; DG retail £{recommended_retail:,.0f}; target contribution £{target_margin:,.0f}.")
-    return notes
+        pct=((market_high-market_low)/market_average*100) if market_average else 0
+        out.append(("Market / stock risk",f"{comp_count} close comparables with about {pct:.0f}% asking-price spread. This indicates pricing uncertainty, not measured days-to-sell."))
+    out.append(("Retail",f"Live average £{market_average:,.0f} · DG retail £{recommended_retail:,.0f} · target contribution £{target_margin:,.0f}."))
+    return out
+
+def extract_source_advert(text):
+    text=(text or "").strip()
+    if not text:return {}
+    out={"raw":text}
+    u=re.search(r'https?://[^\s]+',text)
+    if u:out["url"]=u.group(0).rstrip(").,]")
+    q=re.search(r'£\s*([\d,]+)',text)
+    if q:out["price"]=int(q.group(1).replace(",",""))
+    m=re.search(r'(\d{1,3}(?:,\d{3})+|\d{4,6})\s*(?:miles|mile|mi)\b',text,re.I)
+    if m:out["mileage"]=int(m.group(1).replace(",",""))
+    return out
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 DATA = Path(__file__).with_name("deals.csv")
@@ -953,6 +955,8 @@ def calc(asking,retail,prep,fees,risk):
 def trend_svg():
     return """<svg viewBox="0 0 200 42" style="width:100%;height:100px;margin-top:8px" aria-label="Illustrative price trend"><line x1="0" y1="38" x2="200" y2="38" stroke="#E2E8F0"/><polyline points="2,12 24,14 46,11 68,18 90,17 112,24 134,20 156,29 178,26 198,31" fill="none" stroke="#1769E0" stroke-width="2.2"/></svg>"""
 
+source_advert=st.session_state.get("source_advert_text","")
+source_info={}
 tabs=st.tabs(["SOURCE","MARKET","DEALS","RULES"])
 
 with tabs[0]:
@@ -1048,6 +1052,16 @@ with tabs[0]:
         else:
             st.info("No derivative-level taxonomy record was returned for this exact vehicle/year. DG is using broader fallback choices and will not claim they are compatibility-verified.")
     cat_mileage=st.number_input("Mileage",0,500000,0,1000,key="catalogue_mileage")
+    st.markdown('<div class="section">Source advert</div>',unsafe_allow_html=True)
+    source_advert=st.text_area("Paste advert / description",key="source_advert_text",placeholder="Paste the Marketplace or other advert text here. Include its link if you have it.",help="DG keeps the seller wording as context. Confirm the important facts in the appraisal fields.")
+    source_info=extract_source_advert(source_advert)
+    if source_info:
+        detected=[]
+        if source_info.get("price") is not None: detected.append(f"asking £{source_info['price']:,}")
+        if source_info.get("mileage") is not None: detected.append(f"{source_info['mileage']:,} miles")
+        if source_info.get("url"): detected.append("advert link")
+        if detected: st.caption("Detected: "+" · ".join(detected))
+        st.caption("Detected advert details are not silently substituted for your confirmed appraisal inputs.")
     reg_manual=st.text_input("Registration (optional)",placeholder="e.g. DA59 XDG")
     if selected_make and selected_model:
         label=f"{selected_year} {selected_make} {selected_model}"
@@ -1257,29 +1271,30 @@ with tabs[0]:
         max_buy=max(0,recommended_retail-prep-fees-mot_notes_cost-contingency-target_margin)
         target_buy=max_buy-250
         opening_offer=target_buy-250
-        target_buy_display=target_buy_display if target_buy>0 else "N/A"
-        opening_offer_display=opening_offer_display if opening_offer>0 else "N/A"
+        target_buy_display=f"£{target_buy:,.0f}" if target_buy>0 else "N/A"
+        opening_offer_display=f"£{opening_offer:,.0f}" if opening_offer>0 else "N/A"
         contribution_at_ask=recommended_retail-(asking+prep+fees+mot_notes_cost+contingency)
         roi_at_ask=(contribution_at_ask/(asking+prep+fees+contingency)*100) if (asking+prep+fees+contingency)>0 else 0
 
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}</div></div>',unsafe_allow_html=True)
         st.markdown(f"""<div class="card" style="border:2px solid #111827">
-        st.markdown('<div class="section">DG BUYER OVERVIEW</div>',unsafe_allow_html=True)
-        overview_notes=dg_appraisal_overview(
-            market_average,recommended_retail,asking,max_buy,insurance_category,category_adjustment,
-            condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,
-            prep,fees,contingency,target_margin,int(market.get("count",0) or 0),
-            float(market.get("low",market_average) or market_average),float(market.get("high",market_average) or market_average))
-        for overview_note in overview_notes:
-            st.write(overview_note)
-
         <div class="label">WHAT TO DO</div>
-        <div class="meta">Open at</div><div class="car">£{opening_offer:,.0f}</div>
-        <div class="meta">Aim to buy at</div><div class="car">£{target_buy:,.0f}</div>
+        <div class="meta">Open at</div><div class="car">{opening_offer_display}</div>
+        <div class="meta">Aim to buy at</div><div class="car">{target_buy_display}</div>
         <div class="meta">Do not pay more than</div><div class="car">£{max_buy:,.0f}</div>
         <hr>
         <div class="meta">Advertise at</div><div class="car">£{recommended_retail:,.0f}</div>
         </div>""",unsafe_allow_html=True)
+
+        st.markdown('<div class="section">DG buyer overview</div>',unsafe_allow_html=True)
+        buyer_notes=dg_buyer_overview(market_average,recommended_retail,asking,max_buy,insurance_category,category_adjustment,condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,prep,fees,contingency,target_margin,int(market.get("count",0) or 0),float(market.get("low",market_average) or market_average),float(market.get("high",market_average) or market_average))
+        for overview_title,overview_body in buyer_notes:
+            st.markdown(f"**{overview_title}:** {overview_body}")
+        if source_advert.strip():
+            st.markdown("**Seller advert context:** seller wording is treated as unverified until checked against the car, paperwork and provenance.")
+            with st.expander("View source advert"):
+                st.write(source_advert)
+                if source_info.get("url"): st.markdown(f"[Open original advert]({source_info['url']} )")
 
         st.markdown('<div class="section">Why that retail price?</div>',unsafe_allow_html=True)
         a,b=st.columns(2); a.metric("Live market average",f"£{market_average:,.0f}"); b.metric("DG recommended retail",f"£{recommended_retail:,.0f}")
@@ -1298,6 +1313,7 @@ with tabs[0]:
         st.write(f"Recommended retail: **£{recommended_retail:,.0f}**")
         st.write(f"Prep: **−£{prep:,.0f}**")
         st.write(f"Other buying costs: **−£{fees:,.0f}**")
+        st.write(f"MOT advisory allowance: **−£{mot_notes_cost:,.0f}**")
         st.write(f"Contingency: **−£{contingency:,.0f}**")
         st.write(f"Required contribution: **−£{target_margin:,.0f}**")
         st.write(f"**Maximum buy: £{max_buy:,.0f}**")
@@ -1310,6 +1326,8 @@ with tabs[0]:
             else:
                 st.error(f"Seller asking £{asking:,.0f}: above DG maximum of £{max_buy:,.0f}. Negotiate down or leave it.")
         a,b=st.columns(2); a.metric("Contribution at asking",f"£{contribution_at_ask:,.0f}"); b.metric("ROI at asking",f"{roi_at_ask:.1f}%")
+        st.caption(f"ROI means estimated contribution ÷ cash tied up at the asking price and entered costs. Here that is {roi_at_ask:.1f}%. A negative figure means the entered deal assumptions lose money before the target margin is considered.")
+
 
         st.markdown('<div class="section">What if things go wrong?</div>',unsafe_allow_html=True)
         downside_retail=max(0,recommended_retail-500)
@@ -1320,6 +1338,11 @@ with tabs[0]:
         st.caption("How much contribution is left if the deal goes against you.")
         c1,c2=st.columns(2); c1.metric("Sell £500 cheaper",f"£{stress_retail:,.0f}"); c2.metric("Prep £500 dearer",f"£{stress_prep:,.0f}")
         c1,c2=st.columns(2); c1.metric("Both happen",f"£{stress_both:,.0f}"); c2.metric("Sale price before loss",f"£{break_even:,.0f}")
+        st.markdown("**What those figures mean**")
+        st.write(f"**Sell £500 cheaper:** recommended retail £{recommended_retail:,.0f} minus £500, then the purchase and entered costs are deducted → £{stress_retail:,.0f} contribution.")
+        st.write(f"**Prep £500 dearer:** adds another £500 to prep while keeping the recommended selling price → £{stress_prep:,.0f} contribution.")
+        st.write(f"**Both happen:** combines both downside cases → £{stress_both:,.0f} contribution.")
+        st.write(f"**Sale price before loss:** about £{break_even:,.0f}; below this, the entered purchase/prep/cost assumptions produce a loss.")
         if stress_both<0: st.error(f"If BOTH happen, the deal loses about £{abs(stress_both):,.0f}. Safety margin is poor.")
         elif stress_both<target_margin/2: st.warning(f"If BOTH happen, about £{stress_both:,.0f} remains. Safety margin is tight.")
         else: st.success(f"If BOTH happen, about £{stress_both:,.0f} remains. Safety margin is healthy.")
@@ -1354,11 +1377,15 @@ with tabs[0]:
                 if pr: current_prices.append(float(pr))
             if current_prices:
                 current_avg=sum(current_prices)/len(current_prices); current_low=min(current_prices); current_high=max(current_prices)
-                st.metric("Average asking price now",f"£{current_avg:,.0f}")
-                c1,c2=st.columns(2); c1.metric("Cheapest comparable",f"£{current_low:,.0f}"); c2.metric("Highest comparable",f"£{current_high:,.0f}")
-                st.caption(f"{len(current_prices)} current comparable advert(s) · price spread £{current_high-current_low:,.0f}.")
-                if len(current_prices)>=5: st.success("Useful current sample. Compare this with DG recommended retail above.")
-                else: st.warning("Small sample. Treat the average cautiously.")
+                if len(current_prices)==1:
+                    st.metric("Only close comparable",f"£{current_prices[0]:,.0f}")
+                    st.warning("Only 1 close comparable found — insufficient for a reliable market range. DG will not present one advert as a meaningful average/low/high range.")
+                else:
+                    st.metric("Average asking price now",f"£{current_avg:,.0f}")
+                    c1,c2=st.columns(2); c1.metric("Cheapest comparable",f"£{current_low:,.0f}"); c2.metric("Highest comparable",f"£{current_high:,.0f}")
+                    st.caption(f"{len(current_prices)} current comparable adverts · price spread £{current_high-current_low:,.0f}.")
+                    if len(current_prices)>=5: st.success("Useful current sample. Compare this with DG recommended retail above.")
+                    else: st.warning("Small sample. Treat the range and average cautiously.")
         st.caption("Current adverts only. DG will not draw a historical trend until it has real historical price observations.")
 
         row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}])
