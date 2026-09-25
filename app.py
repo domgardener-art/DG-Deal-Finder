@@ -301,7 +301,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V74 result-flow fix")
+st.caption("DG Deal Finder • V75 bundled catalogue default")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -2591,7 +2591,7 @@ with tabs[0]:
     taxonomy_verified=bool(taxonomy)
     official_catalogue_loaded=not official_catalogue.empty
     if not official_catalogue_loaded:
-        st.warning("UK vehicle catalogue connection failed. DG will retry automatically when you change a selection. Year-locking is temporarily unavailable.")
+        st.caption("Using DG bundled UK vehicle catalogue. Live catalogue enrichment is temporarily unavailable.")
         if st.button("RETRY UK VEHICLE CATALOGUE",key="retry_official_catalogue",use_container_width=True):
             _download_official_uk_catalogue.clear()
             st.rerun()
