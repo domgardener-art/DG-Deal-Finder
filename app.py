@@ -369,8 +369,9 @@ def dg_model_fault_page(make,model,year,engine,fuel,gearbox):
         context=" | ".join(lines[i:min(i+14,len(lines))])
         # Prefer exact engine evidence when the page gives affected-engine detail.
         engine_ok=(not eng) or any(tok in context.lower() for tok in _re.findall(r"[a-z0-9]+",eng) if len(tok)>=3)
-        if "affected vehicles" in context.lower() and not engine_ok:
-            continue
+        # Keep model-level evidence even when the exact engine token is absent.
+        # Applicability is surfaced as broader evidence rather than silently discarded.
+        _broad_applicability=("affected vehicles" in context.lower() and not engine_ok)
         money=_re.search(r"£\s*([0-9,]+)\s*[-–]\s*£?\s*([0-9,]+)",context)
         lo=hi=0
         if money:
@@ -382,7 +383,8 @@ def dg_model_fault_page(make,model,year,engine,fuel,gearbox):
           "severity":"High" if any(k in low for k in ["engine","chain","belt","gearbox","overheat","break"]) else "Medium",
           "ask":ask,"check":check,"cost_low":lo,"cost_high":hi,
           "source":"Car Advert Check UK model fault data","source_url":url,
-          "evidence_type":"model fault database + specialist/owner/recall sources","confidence":"Medium"})
+          "evidence_type":("model-level fault evidence — confirm engine applicability" if _broad_applicability else "model fault database + specialist/owner/recall sources"),
+          "confidence":("Low" if _broad_applicability else "Medium")})
         if len(issues)>=6: break
     return {"status":"found" if issues else "insufficient","issues":issues,"url":url}
 
@@ -546,7 +548,7 @@ def assess_seller_description(text, confirmed=None):
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V92 progressive fault matching")
+st.caption("DG Deal Finder • V93 broader intelligence + cleaner flow")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3709,15 +3711,16 @@ with tabs[0]:
                 "confidence":_i.get("confidence","Medium")})
             _learn.append(_x)
         dg_store_intel(_learn)
-        st.markdown('<div class="dg-section">Buying intelligence</div>',unsafe_allow_html=True)
-        st.markdown('<div class="dg-sub">Model-specific faults, seller questions and likely work exposure — prioritised by severity.</div>',unsafe_allow_html=True)
+        st.markdown('<div class="dg-section">3 · Buying risks</div>',unsafe_allow_html=True)
+        st.markdown('<div class="dg-sub">Known model problems first. High-severity items are shown before lower-risk checks.</div>',unsafe_allow_html=True)
         _status_label=_dg_research_status.replace("_"," ").title()
         _match_text={"exact":"Exact vehicle","model_fuel":"Model + fuel type","model":"Model-level"}.get(_dg_match_level,"Exact vehicle")
-        st.markdown(f'<div class="dg-status"><b>Research:</b> {_status_label} · <b>coverage:</b> {_match_text} · <b>findings:</b> {len(_dg_live_intel)}</div>',unsafe_allow_html=True)
+        with st.expander("Research details"):
+            st.markdown(f"**Status:** {_status_label}  \\n**Coverage:** {_match_text}  \\n**Findings:** {len(_dg_live_intel)}")
         if _dg_live_intel: st.success(f"DG found and cross-checked {len(_dg_live_intel)} model-specific buying issue(s).")
         elif _dg_intel: st.info("Using DG’s existing sourced buying-intelligence bank.")
         elif _dg_research_status=="research_unavailable": st.warning("Live research was unavailable. DG has not treated that as no known issues.")
-        else: st.info("Not enough model-specific evidence was returned to verify an issue. DG has not treated that as no known issues.")
+        else: st.info("No verified exact match. DG is still showing broader model/fuel evidence where available.")
         if _dg_intel:
             _sev_order={"High":0,"Medium":1,"Low":2}
             _dg_intel=sorted(_dg_intel,key=lambda x:_sev_order.get(str(x.get("severity","Medium")).title(),1))
@@ -3763,7 +3766,7 @@ with tabs[0]:
         elif record_preview.get("notes") or st.session_state.get("source_advert_text"):
             st.markdown('<div class="section">Problems found in seller description</div>',unsafe_allow_html=True)
             st.success("No unresolved repair phrase recognised automatically. Still inspect and diagnose the vehicle before purchase.")
-        st.markdown('<div class="section">Finish appraisal</div>',unsafe_allow_html=True)
+        st.markdown('<div class="section">4 · Finish appraisal</div>',unsafe_allow_html=True)
         reg_preview=str(record_preview.get("registration","") or "").strip().upper()
         if reg_preview:
             st.caption(f"Ready to save as **{reg_preview}**")
