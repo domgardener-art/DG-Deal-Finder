@@ -756,9 +756,9 @@ def _engine_cc_from_label(value):
     return None
 
 
-def official_year_engine_options(df,make,model,year,fuel=""):
-    """Return engine-size choices actually present in official UK first-registration
-    rows for the selected model/year/fuel. Empty means we cannot safely constrain."""
+
+def official_year_spec_options(df,make,model,year,fuel=""):
+    """Detailed DVLA model descriptions actually registered in selected year/fuel."""
     if df is None or df.empty:return []
     yc=str(int(year)) if year else ""
     if not yc or yc not in df.columns:return []
@@ -771,6 +771,34 @@ def official_year_engine_options(df,make,model,year,fuel=""):
     if fuel:
         nf=_norm_fuel(fuel)
         d=d[d["Fuel"].map(_norm_fuel).eq(nf)]
+    if d.empty:return []
+    return sorted({str(x).strip() for x in d["Model"] if str(x).strip() and str(x).strip().lower() not in {"unknown","other"}})
+
+def filter_specs_to_official_year(candidate_specs,official_specs):
+    """When official year-specific detailed models exist, they become the allowed
+    spec list. Do not merge generic trims from other years back in."""
+    official=[str(x).strip() for x in (official_specs or []) if str(x).strip()]
+    if official:return _merge_unique(official)
+    return _merge_unique(candidate_specs or [])
+
+def official_year_engine_options(df,make,model,year,fuel="",spec=""):
+    """Return engine-size choices actually present in official UK first-registration
+    rows for selected model/year/fuel/spec. Empty means we cannot safely constrain."""
+    if df is None or df.empty:return []
+    yc=str(int(year)) if year else ""
+    if not yc or yc not in df.columns:return []
+    d=_match_official_make(df,make)
+    if d.empty:return []
+    wanted=str(model or "").strip().lower()
+    d=d[d.apply(lambda r:_dft_model_name(r.get("Make",""),r.get("GenModel","")).lower()==wanted,axis=1)]
+    if d.empty:return []
+    d=d[_dft_number(d[yc])>0]
+    if fuel:
+        nf=_norm_fuel(fuel)
+        d=d[d["Fuel"].map(_norm_fuel).eq(nf)]
+    if spec and "Model" in d.columns:
+        exact=d[d["Model"].astype(str).str.strip().str.lower().eq(str(spec).strip().lower())]
+        if not exact.empty:d=exact
     if d.empty:return []
     return sorted({_engine_label(a,b) for a,b in zip(d["EngineSizeSimple"],d["EngineSizeDesc"]) if _engine_label(a,b)})
 
@@ -1717,23 +1745,37 @@ with tabs[0]:
 
     if taxonomy_verified:
         fuel_rows,tax_specs,_,_,_=taxonomy_options(taxonomy,fuel=selected_fuel)
-        spec_options=_merge_unique(tax_specs,derivatives)
+        candidate_specs=_merge_unique(tax_specs,derivatives)
     else:
         fuel_rows=[]
-        spec_options=derivatives
+        candidate_specs=derivatives
+
+    # YEAR-LOCKED SPEC: if official detailed model rows exist for the chosen
+    # make/model/year/fuel, only those specs are offered. Generic trims from
+    # another year are not merged back into the dropdown.
+    official_year_specs=official_year_spec_options(
+        official_catalogue,selected_make,selected_model,selected_year,selected_fuel
+    )
+    spec_options=filter_specs_to_official_year(candidate_specs,official_year_specs)
+    spec_is_year_constrained=bool(official_year_specs)
+    if spec_is_year_constrained:
+        st.caption(f"Spec list filtered to {selected_year} UK registrations — {len(spec_options)} valid choice(s).")
 
     selected_spec=st.selectbox("Spec / derivative",["— Choose spec —"]+spec_options,
         disabled=not bool(selected_model),
         help="DG combines structured taxonomy when available, clean live-advert trim fields and built-in UK model trim suggestions. Suggestions are not presented as authoritative historical derivative data.")
     if selected_spec.startswith("—"): selected_spec=""
     if taxonomy_verified:
-        st.caption("Fuel → spec → engine → gearbox. Verified taxonomy is prioritised; DG fallback choices are also kept so incomplete free data cannot make the vehicle unusable.")
+        st.caption("Fuel → year-valid spec → spec-valid engine → gearbox. Official UK year data constrains choices where available; fallback data is used only where official detail is unavailable.")
     else:
         st.caption("Fuel → spec → engine → gearbox. Where the free feed has no structured spec, DG supplies clean model trim suggestions instead of dealer names; use the manual override if the exact historical trim is missing.")
 
-    with st.expander("Exact spec not listed?"):
-        manual_spec=st.text_input("Spec override",placeholder="e.g. vRS")
-        if manual_spec.strip(): selected_spec=manual_spec.strip()
+    if not spec_is_year_constrained:
+        with st.expander("Exact spec not listed?"):
+            manual_spec=st.text_input("Spec override",placeholder="e.g. vRS")
+            if manual_spec.strip(): selected_spec=manual_spec.strip()
+    else:
+        st.caption("Manual spec override is disabled because year-specific official spec data is available.")
 
     if taxonomy_verified:
         spec_rows,_,tax_engines,_,_=taxonomy_options(taxonomy,spec=selected_spec,fuel=selected_fuel)
@@ -1748,7 +1790,7 @@ with tabs[0]:
     # once make/model/year/fuel are known, remove engines not evidenced in that year's
     # official UK registrations instead of allowing a bad choice then rejecting it.
     official_year_engines=official_year_engine_options(
-        official_catalogue,selected_make,selected_model,selected_year,selected_fuel
+        official_catalogue,selected_make,selected_model,selected_year,selected_fuel,selected_spec
     )
     engine_options=filter_engines_to_official_year(candidate_engines,official_year_engines)
     engine_is_year_constrained=bool(official_year_engines)
