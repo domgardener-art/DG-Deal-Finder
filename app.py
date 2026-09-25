@@ -464,7 +464,11 @@ def dg_load_issue_bank():
     try:
         import csv
         with DG_ISSUE_BANK.open("r",encoding="utf-8-sig",newline="") as f:
-            return list(csv.DictReader(f))
+            _rows=list(csv.DictReader(f))
+        # Never allow parser headings/section labels to masquerade as faults.
+        _bad=("years and engines with","common problems","known faults","known problems","serious known fault",
+              "affected vehicles","typical symptoms","rough guide","other years","owner reports")
+        return [r for r in _rows if not any(x in str(r.get("issue","")).lower() for x in _bad)]
     except Exception:
         return []
 
@@ -715,7 +719,7 @@ def assess_seller_description(text, confirmed=None):
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V103 intelligence quality control")
+st.caption("DG Deal Finder • V104 mileage-aware clean intelligence")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3924,7 +3928,19 @@ with tabs[0]:
                 _cost=(f"£{_lo:,.0f}–£{_hi:,.0f}" if _hi else "Cost not verified"); _plan=(f" · DG allowance £{_mid:,.0f}" if _mid else "")
                 _mfrom=int(_i.get("mileage_from",0) or 0); _mnote=_html.escape(str(_i.get("mileage_note","") or "")); _current_miles=int(mileage or 0); _mileage_line=""
                 if _mfrom:
-                    _mileage_line=(f'<div class="dg-row"><b>Mileage relevance</b><br>This car is at {_current_miles:,} miles. DG holds this risk as more relevant from about {_mfrom:,} miles. {_mnote}</div>')
+                    _mto=int(_i.get("mileage_to",0) or 0)
+                    if _mto:
+                        _band=f"{_mfrom:,}–{_mto:,} miles"
+                        if _current_miles < _mfrom:
+                            _position=f"This car is {(_mfrom-_current_miles):,} miles below the reported problem band."
+                        elif _current_miles <= _mto:
+                            _position="This car is inside the reported problem-mileage band."
+                        else:
+                            _position=f"This car is {(_current_miles-_mto):,} miles beyond the reported problem band; confirm whether the work has already been done."
+                    else:
+                        _band=f"from about {_mfrom:,} miles"
+                        _position=("This car has reached that mileage." if _current_miles>=_mfrom else f"This car is about {(_mfrom-_current_miles):,} miles below that point.")
+                    _mileage_line=(f'<div class="dg-row"><b>Common mileage / relevance</b><br><strong>Reported band: {_band}</strong><br>This car: {_current_miles:,} miles. {_position} {_mnote}</div>')
                 _card=f'<div class="dg-intel-card {_cls}"><div><span class="dg-pill {_cls}">{_sev.upper()}</span><span class="dg-issue">{_issue}</span></div><div class="dg-row"><b>Ask seller</b><br>{_ask}</div><div class="dg-row"><b>Check before buying</b><br>{_check}</div>{_mileage_line}<div class="dg-row"><b>Evidence</b><br><strong>{_badge}</strong> · {_source} · {_html.escape(str(_i.get("confidence","Low")))} confidence</div><div class="dg-cost">Likely work: {_cost}{_plan}</div><div class="dg-row" style="font-size:.8rem;color:#667085">Source: {_source}</div></div>' 
                 st.markdown(_card,unsafe_allow_html=True)
             _dg_cost_lows=[float(x.get("cost_low",0) or 0) for x in _dg_intel]; _dg_cost_highs=[float(x.get("cost_high",0) or 0) for x in _dg_intel]
