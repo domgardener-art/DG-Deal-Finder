@@ -511,6 +511,15 @@ div[data-testid="stMetricValue"]{font-size:1.34rem!important;letter-spacing:-.02
   color:#FFFFFF!important;
   opacity:1!important;
 }
+
+/* V39 mobile readability */
+[data-testid="stAlert"] *, .stAlert * {color:#172033!important;opacity:1!important}
+[data-testid="stAlert"] p, [data-testid="stAlert"] div {font-weight:650!important}
+.st-key-new_appraisal_btn button,
+.st-key-new_appraisal_btn button *,
+button[kind="secondary"] p {opacity:1!important}
+.st-key-new_appraisal_btn button {background:#111827!important;border-color:#111827!important;color:#FFFFFF!important}
+.st-key-new_appraisal_btn button p {color:#FFFFFF!important}
 </style>
 """, unsafe_allow_html=True)
 
@@ -721,14 +730,79 @@ def official_uk_vehicle_choices(df,make,model,year=None):
     d=d[mask]
     yc=str(int(year)) if year else ""
     if yc in d.columns:
-        active=d[_dft_number(d[yc])>0]
-        if not active.empty:d=active
+        d=d[_dft_number(d[yc])>0]
     fuels=sorted({str(x).strip() for x in d.get("Fuel",pd.Series(dtype=str)) if str(x).strip()})
     engines=sorted({_engine_label(a,b) for a,b in zip(d.get("EngineSizeSimple",[]),d.get("EngineSizeDesc",[])) if _engine_label(a,b)})
     # DVLA's detailed Model field is the closest official bulk-data equivalent
     # to derivative/spec. Keep it verbatim rather than inventing a trim.
     specs=sorted({str(x).strip() for x in d.get("Model",pd.Series(dtype=str)) if str(x).strip()})
     return engines,fuels,[],specs
+
+
+def _norm_fuel(value):
+    x=str(value or "").strip().lower()
+    if "electric" in x and "hybrid" not in x:return "electric"
+    if "hybrid" in x:return "hybrid"
+    if "diesel" in x:return "diesel"
+    if "petrol" in x:return "petrol"
+    return x
+
+def _engine_cc_from_label(value):
+    x=str(value or "").lower()
+    m=re.search(r"(\d{3,4})\s*cc",x)
+    if m:return int(m.group(1))
+    m=re.search(r"(\d(?:\.\d)?)\s*l\b",x)
+    if m:return int(round(float(m.group(1))*1000))
+    return None
+
+def official_combo_verification(df,make,model,year,fuel="",spec="",engine=""):
+    """Verify that the chosen combination appears in official first-registration
+    data for the selected calendar year. Returns verified/blocked/unavailable."""
+    if df is None or df.empty:
+        return {"status":"unavailable","reason":"Official UK catalogue unavailable."}
+    yc=str(int(year)) if year else ""
+    if not yc or yc not in df.columns:
+        return {"status":"unavailable","reason":"Official year-level engine verification is not available for this year."}
+    d=_match_official_make(df,make)
+    if d.empty:return {"status":"blocked","reason":f"No official UK records found for {make} in {year}."}
+    wanted=str(model or "").strip().lower()
+    d=d[d.apply(lambda r:_dft_model_name(r.get("Make",""),r.get("GenModel","")).lower()==wanted,axis=1)]
+    if d.empty:return {"status":"blocked","reason":f"No official UK records found for {make} {model} in {year}."}
+    d=d[_dft_number(d[yc])>0]
+    if d.empty:return {"status":"blocked","reason":f"{make} {model} has no first-registration record in the official UK {year} data."}
+    if fuel:
+        nf=_norm_fuel(fuel)
+        fd=d[d["Fuel"].map(_norm_fuel).eq(nf)]
+        if fd.empty:return {"status":"blocked","reason":f"{fuel} is not shown for {make} {model} in the official UK {year} data."}
+        d=fd
+    # For a DG fallback trim, require the meaningful trim words to occur in the
+    # official detailed model where possible. If not, leave spec unverified rather
+    # than falsely blocking a legitimate naming variation.
+    spec_verified=False
+    if spec and "Model" in d.columns:
+        words=[w.lower() for w in re.findall(r"[A-Za-z0-9]+",str(spec)) if len(w)>=2 and w.lower() not in {"the","edition"}]
+        if words:
+            sm=d["Model"].astype(str).str.lower().map(lambda x:all(w in x for w in words))
+            if sm.any():
+                d=d[sm];spec_verified=True
+    if engine:
+        wanted_cc=_engine_cc_from_label(engine)
+        if wanted_cc:
+            vals=pd.to_numeric(d["EngineSizeSimple"],errors="coerce")
+            # DfT EngineSizeSimple is the upper edge of a 100cc band. Accept only
+            # the matching nominal band (e.g. 2.0L -> 1901-2000cc), not a different engine.
+            lo=max(1,wanted_cc-99); hi=wanted_cc+25
+            ed=d[(vals>=lo)&(vals<=hi)]
+            if ed.empty:
+                available=sorted({_engine_label(a,b) for a,b in zip(d["EngineSizeSimple"],d["EngineSizeDesc"]) if _engine_label(a,b)})
+                suffix=(" Available for this year: "+", ".join(available[:8])) if available else ""
+                return {"status":"blocked","reason":f"{engine} is not verified for {make} {model} {year}.{suffix}"}
+            d=ed
+        else:
+            # If we cannot safely map the engine label to an official engine-size band,
+            # do not claim verification.
+            return {"status":"unavailable","reason":"This engine label cannot be matched safely to the official engine-size data."}
+    return {"status":"verified","reason":f"Engine/fuel combination appears in official UK first-registration data for {year}.","spec_verified":spec_verified}
 
 UK_MAKES=["Abarth","Alfa Romeo","Audi","BMW","Citroen","Cupra","Dacia","DS","Fiat","Ford","Honda","Hyundai","Jaguar","Jeep","Kia","Land Rover","Lexus","Mazda","Mercedes-Benz","MG","MINI","Mitsubishi","Nissan","Peugeot","Porsche","Renault","SEAT","Skoda","Smart","Subaru","Suzuki","Tesla","Toyota","Vauxhall","Volkswagen","Volvo"]
 COMMON_UK_SPECS={
@@ -1549,14 +1623,17 @@ with tabs[0]:
     if selected_model=="— Choose model —": selected_model=""
 
     # Spec-first selector backed by a separate vehicle taxonomy.
+    # Keep selector interaction fast: live adverts are deliberately NOT fetched here.
+    # The deeper Autoza market search runs once, only after ANALYSE DEAL is pressed.
     selector_rows=[]
-    if selected_make and selected_model:
-        try: selector_rows=autoza_comparables(selected_make,selected_model,selected_year,30)
-        except Exception: selector_rows=[]
 
     taxonomy=[]
     taxonomy_error=""
-    if selected_make and selected_model:
+    official_precheck=official_uk_vehicle_choices(official_catalogue,selected_make,selected_model,selected_year) if selected_make and selected_model else ([],[],[],[])
+    official_has_choices=any(official_precheck)
+    # Speed: official UK bulk data is local-in-memory after the first cached load.
+    # Only call the external taxonomy service when official data has no useful choices.
+    if selected_make and selected_model and not official_has_choices:
         try: taxonomy=fleetbyte_variants(selected_make,selected_model,selected_year)
         except Exception as e: taxonomy_error=str(e)
 
@@ -1642,6 +1719,18 @@ with tabs[0]:
     selected_gearbox=st.selectbox("Gearbox",["— Choose gearbox —"]+gearbox_options,
         disabled=not bool(selected_model))
     if selected_gearbox.startswith("—"): selected_gearbox=""
+
+    combo_check=official_combo_verification(
+        official_catalogue,selected_make,selected_model,selected_year,
+        selected_fuel,selected_spec,selected_engine
+    ) if selected_make and selected_model and selected_engine else {"status":"unavailable","reason":"Choose an engine to verify it against the selected year."}
+    if selected_engine:
+        if combo_check["status"]=="verified":
+            st.success("YEAR / ENGINE CHECK ✓  "+combo_check["reason"])
+        elif combo_check["status"]=="blocked":
+            st.error("YEAR / ENGINE MISMATCH — "+combo_check["reason"]+" Change the selection before valuation.")
+        else:
+            st.warning("YEAR / ENGINE NOT VERIFIED — "+combo_check["reason"]+" DG will not return an automatic valuation until this is verified.")
 
     with st.expander("Exact engine not listed?"):
         manual_engine=st.text_input("Engine override",placeholder="e.g. 2.0L")
@@ -1910,10 +1999,22 @@ with tabs[0]:
             st.caption("This screens seller wording for risk and contradictions. Seller claims remain unverified; it does not replace inspection, diagnostics or provenance checks.")
         go=st.form_submit_button("ANALYSE DEAL  →",use_container_width=True)
     if go:
+        # Safety gate: never produce a valuation from an engine/year combination that
+        # we cannot verify. This prevents a plausible-looking value for the wrong derivative.
+        combo_check=official_combo_verification(
+            official_catalogue,selected_make,selected_model,selected_year,
+            selected_fuel,selected_spec,selected_engine
+        ) if selected_make and selected_model and selected_engine else {"status":"unavailable","reason":"Make, model and engine must be selected."}
+        valuation_blocked=combo_check.get("status")!="verified"
+        if valuation_blocked:
+            st.session_state["current_appraisal_ready"]=False
+            st.session_state["current_appraisal_record"]=None
+            st.error("VALUATION STOPPED — "+combo_check.get("reason","Vehicle configuration could not be verified.")+" Choose a verified year/engine combination before DG calculates a value.")
+            st.stop()
         # Normalize any stale Streamlit state before result rendering.
-        market = safe_market_snapshot(st.session_state.get("market_estimate"))
+        market = safe_market_snapshot(st.session_state.get("market_estimate")) if not valuation_blocked else None
         fresh_market=None
-        if selected_make and selected_model:
+        if selected_make and selected_model and not valuation_blocked:
             try:
                 with st.spinner("Checking live market and analysing deal…"):
                     comps=autoza_comparables(selected_make,selected_model,selected_year,100)
