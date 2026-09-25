@@ -1452,9 +1452,73 @@ def autoza_market_stats(make="", model=""):
         "source":"Autoza market stats"
     }
 
+
+def _comp_num(row,*keys):
+    for k in keys:
+        try:
+            v=row.get(k)
+            if v not in (None,""): return float(str(v).replace("£","").replace(",",""))
+        except Exception: pass
+    return None
+
+def dg_multi_signal_valuation(rows, target_year, target_mileage):
+    """DG asking-price triangulation: median, mileage regression, market position."""
+    clean=[]
+    for r in (rows or []):
+        if not isinstance(r,dict): continue
+        price=_comp_num(r,"price","askingPrice","asking_price")
+        year=_comp_num(r,"year","registrationYear","registration_year")
+        miles=_comp_num(r,"mileage","miles","odometer")
+        if not price or price<=250 or not year or abs(int(year)-int(target_year))>1: continue
+        clean.append({"price":float(price),"year":int(year),"mileage":float(miles) if miles is not None else None})
+    if not clean: return {}
+    used=clean
+    prices=sorted(x["price"] for x in clean)
+    if len(clean)>=8:
+        mid=len(prices)//2
+        q1=statistics.median(prices[:mid]); q3=statistics.median(prices[(len(prices)+1)//2:])
+        iqr=max(q3-q1,1); lo=q1-1.5*iqr; hi=q3+1.5*iqr
+        trimmed=[x for x in clean if lo<=x["price"]<=hi]
+        if len(trimmed)>=5: used=trimmed
+    prices=sorted(x["price"] for x in used)
+    med=float(statistics.median(prices))
+    reg=[x for x in used if x["mileage"] is not None]
+    mileage_est=None; slope=None
+    if len(reg)>=5 and len({x["mileage"] for x in reg})>=3:
+        xs=[x["mileage"] for x in reg]; ys=[x["price"] for x in reg]
+        xm=sum(xs)/len(xs); ym=sum(ys)/len(ys); den=sum((x-xm)**2 for x in xs)
+        if den>0:
+            slope=max(min(sum((x-xm)*(y-ym) for x,y in zip(xs,ys))/den,0.0),-0.20)
+            mileage_est=ym+slope*(float(target_mileage)-xm)
+            mileage_est=max(min(mileage_est,max(prices)*1.12),min(prices)*0.88)
+    if reg:
+        ranked=sorted(reg,key=lambda x:abs(x["mileage"]-float(target_mileage)))
+        near=ranked[:max(3,min(len(ranked),math.ceil(len(ranked)/2)))]
+        position=float(statistics.median([x["price"] for x in near]))
+    else:
+        position=med
+    signals=[med,position]+([float(mileage_est)] if mileage_est is not None else [])
+    combined=float(statistics.median(signals))
+    low=float(prices[max(0,int((len(prices)-1)*0.20))])
+    high=float(prices[min(len(prices)-1,int((len(prices)-1)*0.80))])
+    spread=(high-low)/combined if combined else 1
+    n=len(used)
+    confidence="High" if n>=10 and spread<=0.30 and mileage_est is not None else ("Medium" if n>=5 else "Low")
+    return {"value":combined,"median":med,"mileage_estimate":mileage_est,
+            "market_position":position,"low":low,"high":high,"count":n,
+            "mileage_slope":slope,"confidence":confidence,
+            "evidence":"DG multi-signal valuation (median + mileage + market position)"}
+
 def robust_market_value(rows, year, mileage, make="", model="", asking=0):
     """Evidence ladder: individual adverts first, then free aggregate market stats.
     Never manufactures a £0 valuation."""
+    multi=dg_multi_signal_valuation(rows,year,mileage)
+    if multi.get("value",0)>0:
+        return {"value":multi["value"],"low":multi["low"],"high":multi["high"],
+                "count":multi["count"],"confidence":multi["confidence"],
+                "evidence":multi["evidence"],"manual_required":False,
+                "signals":multi}
+
     rows=rows or []
     try:
         est=estimate_market_from_comps(rows,year,mileage)
@@ -1474,7 +1538,7 @@ def robust_market_value(rows, year, mileage, make="", model="", asking=0):
     if value>0:
         return {"value":value,"low":low or value,"high":high or value,
                 "count":count,"confidence":"High" if count>=8 else ("Medium" if count>=3 else "Low"),
-                "evidence":"Comparable adverts","manual_required":False}
+                "evidence":"Comparable adverts (target year ±1)","manual_required":False}
     stats=autoza_market_stats(make,model)
     agg=float(stats.get("typical") or 0)
     if agg>0:
@@ -1490,6 +1554,18 @@ def manual_market_override(default=0):
                            help="Use only when free market sources cannot produce a defensible value.")
 
 def estimate_market_from_comps(rows, year, mileage):
+
+    # V52: valuation evidence is restricted to the target year ±1.
+    # Missing/invalid listing years are excluded from market-derived valuation.
+    _year_filtered=[]
+    for _r in (rows or []):
+        try:
+            _ry=int(_r.get("year") or _r.get("registrationYear") or _r.get("registration_year") or 0)
+        except Exception:
+            _ry=0
+        if _ry and abs(_ry-int(year)) <= 1:
+            _year_filtered.append(_r)
+    rows=_year_filtered
     """Average current asking price from relevant for-sale listings.
     Filters obvious mismatches, then uses year/mileage proximity. No sold-price claim."""
     clean=[]
