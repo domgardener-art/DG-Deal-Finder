@@ -261,6 +261,152 @@ COMMON_UK_SPECS={
 }
 
 
+
+# ---------- VEHICLE SPEC CASCADE ----------
+# Reliable local fallback for common UK stock. Live sources augment this when available.
+DG_POWERTRAIN_CATALOG = {
+    ("Skoda","Octavia"): {
+        "engines":["1.0L","1.2L","1.4L","1.5L","1.6L","1.8L","2.0L"],
+        "fuels":["Petrol","Diesel","Hybrid"],
+        "gearboxes":["Manual","Automatic","DSG"],
+        "specs":["S","SE","SE Plus","Elegance","Laurin & Klement","vRS","SportLine"]
+    },
+    ("Volkswagen","Golf"): {
+        "engines":["1.0L","1.2L","1.4L","1.5L","1.6L","2.0L"],
+        "fuels":["Petrol","Diesel","Hybrid","Electric"],
+        "gearboxes":["Manual","Automatic","DSG"],
+        "specs":["S","SE","Match","GT","GT Edition","GTI","GTD","R","R-Line"]
+    },
+    ("Ford","Fiesta"): {
+        "engines":["1.0L","1.1L","1.25L","1.4L","1.5L","1.6L"],
+        "fuels":["Petrol","Diesel","Hybrid"],
+        "gearboxes":["Manual","Automatic"],
+        "specs":["Style","Zetec","Titanium","Titanium X","ST-Line","ST-Line X","ST"]
+    },
+    ("Ford","Focus"): {
+        "engines":["1.0L","1.5L","1.6L","2.0L","2.3L"],
+        "fuels":["Petrol","Diesel","Hybrid"],
+        "gearboxes":["Manual","Automatic"],
+        "specs":["Style","Zetec","Titanium","Titanium X","ST-Line","ST-Line X","ST","RS"]
+    },
+    ("BMW","3 Series"): {
+        "engines":["1.5L","1.6L","2.0L","3.0L"],
+        "fuels":["Petrol","Diesel","Hybrid"],
+        "gearboxes":["Manual","Automatic"],
+        "specs":["SE","Sport","Luxury","M Sport","M340i","M340d"]
+    },
+    ("Audi","A3"): {
+        "engines":["1.0L","1.2L","1.4L","1.5L","1.6L","1.8L","2.0L"],
+        "fuels":["Petrol","Diesel","Hybrid"],
+        "gearboxes":["Manual","Automatic","S tronic"],
+        "specs":["SE","Sport","S line","Black Edition","S3","RS3"]
+    },
+    ("Vauxhall","Corsa"): {
+        "engines":["1.0L","1.2L","1.3L","1.4L","1.5L","1.6L"],
+        "fuels":["Petrol","Diesel","Electric"],
+        "gearboxes":["Manual","Automatic"],
+        "specs":["S","SE","Design","Energy","SRi","Elite","GS","Ultimate","VXR"]
+    },
+    ("Mercedes-Benz","A-Class"): {
+        "engines":["1.3L","1.5L","1.6L","2.0L","2.1L"],
+        "fuels":["Petrol","Diesel","Hybrid"],
+        "gearboxes":["Manual","Automatic"],
+        "specs":["SE","Sport","AMG Line","AMG Line Premium","AMG Line Premium Plus","A35 AMG","A45 AMG"]
+    },
+}
+
+def _merge_unique(*groups):
+    out=[]
+    seen=set()
+    for group in groups:
+        for x in group or []:
+            x=str(x).strip()
+            if x and x.lower() not in seen:
+                seen.add(x.lower()); out.append(x)
+    return out
+
+def local_vehicle_choices(make,model):
+    d=DG_POWERTRAIN_CATALOG.get((make,model),{})
+    specs=_merge_unique(d.get("specs",[]), UK_TRIMS.get((make,model),[]))
+    return d.get("engines",[]),d.get("fuels",[]),d.get("gearboxes",[]),specs
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def carsxe_choices(make,model,year):
+    """Optional richer taxonomy. Only used when CARSXE_API_KEY exists in Streamlit Secrets."""
+    key=str(_secret("CARSXE_API_KEY","")).strip()
+    if not key: return [],[],[],[]
+    params=urlencode({"key":key,"year":int(year),"make":make,"model":model,"allTrimOptions":1})
+    req=Request("https://api.carsxe.com/v1/ymm?"+params,headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
+    with urlopen(req,timeout=15) as r:
+        data=json.loads(r.read().decode("utf-8"))
+    trims=[]
+    engines=[]; fuels=[]; gearboxes=[]
+    for item in data.get("trimOptions",[]) or []:
+        if isinstance(item,str): trims.append(item)
+        elif isinstance(item,dict):
+            name=item.get("name") or item.get("trim") or item.get("variant")
+            if name: trims.append(name)
+            txt=json.dumps(item)
+            m=re.search(r'(\d\.\d)\s*L',txt,re.I)
+            if m: engines.append(m.group(1)+"L")
+            if re.search(r'diesel',txt,re.I): fuels.append("Diesel")
+            if re.search(r'petrol|gasoline',txt,re.I): fuels.append("Petrol")
+            if re.search(r'hybrid',txt,re.I): fuels.append("Hybrid")
+            if re.search(r'electric',txt,re.I): fuels.append("Electric")
+            if re.search(r'automatic|\\b\\d+A\\b',txt,re.I): gearboxes.append("Automatic")
+            if re.search(r'manual|\\b\\d+M\\b',txt,re.I): gearboxes.append("Manual")
+    return _merge_unique(engines),_merge_unique(fuels),_merge_unique(gearboxes),_merge_unique(trims)
+
+@st.cache_data(ttl=900, show_spinner=False)
+def marketcheck_choices(make,model,year):
+    """Optional UK listing facets. Uses MARKETCHECK_API_KEY if the dealer later adds one."""
+    key=str(_secret("MARKETCHECK_API_KEY","")).strip()
+    if not key: return [],[],[],[]
+    params={
+        "api_key":key,"year":int(year),"make":make,"model":model,"rows":0,
+        "facets":"engine_size|0|100,fuel_type|0|100,transmission|0|100,variant|0|200"
+    }
+    req=Request("https://api.marketcheck.com/v2/search/car/uk/active?"+urlencode(params),
+                headers={"Accept":"application/json","User-Agent":"DG-Deal-Finder/1.0"})
+    with urlopen(req,timeout=15) as r:
+        data=json.loads(r.read().decode("utf-8"))
+    facets=data.get("facets",{}) or {}
+    def terms(name):
+        v=facets.get(name,[])
+        if isinstance(v,dict): v=v.get("terms",v.get("buckets",[]))
+        out=[]
+        for x in v or []:
+            if isinstance(x,str): out.append(x)
+            elif isinstance(x,dict):
+                z=x.get("term",x.get("key",x.get("value")))
+                if z is not None: out.append(str(z))
+        return out
+    engines=[]
+    for x in terms("engine_size"):
+        try:
+            n=float(x)
+            engines.append(f"{n:.1f}L")
+        except: engines.append(x)
+    return _merge_unique(engines),_merge_unique(terms("fuel_type")),_merge_unique(terms("transmission")),_merge_unique(terms("variant"))
+
+def robust_vehicle_choices(make,model,year,rows):
+    # Current adverts first, then optional structured APIs, then safe local fallback.
+    a=build_vehicle_choices(rows)
+    mc=([],[],[],[])
+    cx=([],[],[],[])
+    try: mc=marketcheck_choices(make,model,year)
+    except Exception: pass
+    try: cx=carsxe_choices(make,model,year)
+    except Exception: pass
+    local=local_vehicle_choices(make,model)
+    merged=tuple(_merge_unique(a[i],mc[i],cx[i],local[i]) for i in range(4))
+    sources=[]
+    if any(a): sources.append("live adverts")
+    if any(mc): sources.append("MarketCheck")
+    if any(cx): sources.append("CarsXE")
+    if any(local): sources.append("DG UK fallback")
+    return (*merged, sources)
+
 @st.cache_data(ttl=600, show_spinner=False)
 def autoza_comparables(make, model, year, limit=50):
     params={"make":str(make).strip(),"model":str(model).strip(),
@@ -682,11 +828,13 @@ with tabs[0]:
         except Exception:
             models=[]
     selected_model=st.selectbox("Model",["— Choose model —"]+models,disabled=not bool(selected_make))
-    manual_model=st.text_input("Model override (optional)",placeholder="Use this if the model list is missing or wrong")
-    if manual_model.strip(): selected_model=manual_model.strip()
+    with st.expander("Model missing from the list?"):
+        manual_model=st.text_input("Manual model",placeholder="Only use this when the actual model is missing, e.g. Octavia")
+        if manual_model.strip():
+            selected_model=manual_model.strip()
     if selected_model=="— Choose model —": selected_model=""
 
-    # Build engine/fuel/gearbox/spec choices from real current adverts for this make/model/year.
+    # Engine/spec cascade. Do NOT use trim text as a model override.
     selector_rows=[]
     selector_error=""
     if selected_make and selected_model:
@@ -694,19 +842,36 @@ with tabs[0]:
             selector_rows=autoza_comparables(selected_make,selected_model,selected_year,50)
         except Exception as e:
             selector_error=str(e)
-    engines,fuels,gearboxes,derivatives=build_vehicle_choices(selector_rows)
+    engines,fuels,gearboxes,derivatives,choice_sources=robust_vehicle_choices(
+        selected_make,selected_model,selected_year,selector_rows
+    ) if selected_make and selected_model else ([],[],[],[],[])
+
     c1,c2=st.columns(2)
-    selected_engine=c1.selectbox("Engine / powertrain",[""]+engines,help="Choices found in current adverts for this model/year range.")
-    selected_fuel=c2.selectbox("Fuel",[""]+fuels)
+    selected_engine=c1.selectbox("Engine / powertrain",["— Choose engine —"]+engines,disabled=not bool(selected_model))
+    selected_fuel=c2.selectbox("Fuel",["— Choose fuel —"]+fuels,disabled=not bool(selected_model))
     c1,c2=st.columns(2)
-    selected_gearbox=c1.selectbox("Gearbox",[""]+gearboxes)
-    selected_spec=c2.selectbox("Spec / derivative",[""]+derivatives,help="Derivative descriptions found in current adverts.")
-    manual_spec=st.text_input("Spec override (optional)",placeholder="e.g. 2.0 TDI vRS DSG")
-    if manual_spec.strip(): selected_spec=manual_spec.strip()
-    if selected_make and selected_model and not selector_rows:
-        st.caption("No live derivative choices were returned, so use the spec override if needed.")
-    elif selector_rows:
-        st.caption(f"Engine/spec choices built from {len(selector_rows)} current advert(s). You can still override the exact derivative.")
+    selected_gearbox=c1.selectbox("Gearbox",["— Choose gearbox —"]+gearboxes,disabled=not bool(selected_model))
+    selected_spec=c2.selectbox("Spec / derivative",["— Choose spec —"]+derivatives,disabled=not bool(selected_model))
+
+    # Convert placeholders to blank values for matching/calculation.
+    if selected_engine.startswith("—"): selected_engine=""
+    if selected_fuel.startswith("—"): selected_fuel=""
+    if selected_gearbox.startswith("—"): selected_gearbox=""
+    if selected_spec.startswith("—"): selected_spec=""
+
+    with st.expander("Exact engine/spec not listed?"):
+        manual_engine=st.text_input("Engine override",placeholder="e.g. 2.0L")
+        manual_spec=st.text_input("Spec override",placeholder="e.g. vRS")
+        if manual_engine.strip(): selected_engine=manual_engine.strip()
+        if manual_spec.strip(): selected_spec=manual_spec.strip()
+
+    if selected_make and selected_model:
+        if choice_sources:
+            st.caption("Vehicle choices: "+", ".join(choice_sources)+".")
+        if not engines:
+            st.warning("No engine list is available for this exact model/year. Use Engine override rather than guessing.")
+        if not derivatives:
+            st.warning("No spec list is available for this exact model/year. Use Spec override rather than guessing.")
     cat_mileage=st.number_input("Mileage",0,500000,0,1000,key="catalogue_mileage")
     reg_manual=st.text_input("Registration (optional)",placeholder="e.g. DA59 XDG")
     if selected_make and selected_model:
@@ -838,7 +1003,7 @@ with tabs[0]:
             "Service history retail adjustment (£)",-3000,1000,history_adjust_default,50,
             help="Editable retail adjustment. Full history defaults to £0; incomplete/unknown history reduces the expected retail."
         )
-        keys_adjust_default={"2+":0,"1 key":-100,"Unknown":-100}.get(keys,-100)
+        keys_adjust_default={"2+ keys":0,"1 key":-100,"Unknown":-100}.get(keys,-100)
         keys_adjustment=st.number_input(
             "Keys retail adjustment (£)",-1000,500,keys_adjust_default,50,
             help="Editable retail adjustment for missing/unknown spare keys."
