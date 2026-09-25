@@ -309,7 +309,7 @@ def estimate_market_from_comps(rows, target_year, target_mileage):
     if not clean: return None
     tm=float(target_mileage or 0)
     clean.sort(key=lambda z:(abs(z[2]-int(target_year))*30000 + (abs(z[1]-tm) if tm else 0)))
-    chosen=clean[:min(12,len(clean))]
+    chosen=clean[:min(10,len(clean))]
     prices=sorted(z[0] for z in chosen)
     n=len(prices); median=prices[n//2] if n%2 else (prices[n//2-1]+prices[n//2])/2
     return {"retail":median,"low":prices[0],"high":prices[-1],"count":len(chosen),"rows":[z[3] for z in chosen]}
@@ -333,6 +333,57 @@ def analyse_risk(year,mileage,make,model,notes=""):
     level="High" if points>=4 else ("Medium" if points>=2 else "Low")
     if not reasons: reasons=["No obvious age/mileage/text risk flags detected"]
     return level,reasons
+
+
+@st.cache_data(ttl=3300, show_spinner=False)
+def dvsa_token(client_id, client_secret, token_url, scope):
+    body=urlencode({"grant_type":"client_credentials","client_id":client_id,
+                    "client_secret":client_secret,"scope":scope}).encode()
+    req=urllib.request.Request(token_url,data=body,headers={"Content-Type":"application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(req,timeout=20) as r:
+        return json.loads(r.read().decode())["access_token"]
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def dvsa_mot_lookup(reg):
+    cfg=st.secrets
+    needed=["DVSA_CLIENT_ID","DVSA_CLIENT_SECRET","DVSA_TOKEN_URL","DVSA_SCOPE","DVSA_API_KEY"]
+    missing=[k for k in needed if not cfg.get(k)]
+    if missing: return {"configured":False,"missing":missing}
+    token=dvsa_token(cfg["DVSA_CLIENT_ID"],cfg["DVSA_CLIENT_SECRET"],cfg["DVSA_TOKEN_URL"],cfg["DVSA_SCOPE"])
+    vrm=re.sub(r"[^A-Za-z0-9]","",reg).upper()
+    url="https://history.mot.api.gov.uk/v1/trade/vehicles/registration/"+quote(vrm)
+    req=urllib.request.Request(url,headers={"Authorization":"Bearer "+token,"X-API-Key":cfg["DVSA_API_KEY"],"Accept":"application/json"})
+    with urllib.request.urlopen(req,timeout=20) as r:
+        data=json.loads(r.read().decode())
+    return {"configured":True,"data":data}
+
+def mot_risk_summary(data):
+    tests=data.get("motTests",[]) if isinstance(data,dict) else []
+    tests=sorted(tests,key=lambda x:x.get("completedDate",""),reverse=True)
+    latest=tests[0] if tests else {}
+    fails=sum(1 for t in tests if str(t.get("testResult","")).upper()=="FAILED")
+    advisories=[]; majors=[]; dangerous=[]
+    recurring={}
+    mileages=[]
+    for t in tests:
+        try:
+            m=int(str(t.get("odometerValue","")).replace(",",""))
+            mileages.append((t.get("completedDate",""),m))
+        except: pass
+        for d in t.get("defects",[]) or []:
+            typ=str(d.get("type","")).upper(); txt=str(d.get("text","")).strip()
+            if typ=="ADVISORY": advisories.append(txt)
+            if typ=="MAJOR": majors.append(txt)
+            if typ=="DANGEROUS": dangerous.append(txt)
+            key=re.sub(r"[^a-z ]","",txt.lower())
+            for word in ("tyre","brake","corrosion","suspension","oil leak","exhaust","windscreen"):
+                if word in key: recurring[word]=recurring.get(word,0)+1
+    mileage_warning=False
+    chrono=sorted(mileages)
+    for i in range(1,len(chrono)):
+        if chrono[i][1] < chrono[i-1][1]: mileage_warning=True
+    return {"latest":latest,"fails":fails,"advisories":advisories,"majors":majors,
+            "dangerous":dangerous,"recurring":recurring,"mileage_warning":mileage_warning,"tests":tests}
 
 def dvla_lookup(reg):
     """Official DVLA Vehicle Enquiry Service lookup by VRM."""
@@ -587,8 +638,8 @@ with tabs[0]:
         c3.metric("Comparable high",f'£{market["high"]:,.0f}')
         st.caption(f'Based on {market["count"]} closest live dealer asking prices. Asking price is not the same as achieved sale price.')
         with st.expander("Similar cars currently advertised"):
-            for car in market["rows"][:8]:
-                title=f'{car.get("year","")} {car.get("make","")} {car.get("model","")}'
+            for i,car in enumerate(market["rows"][:10],1):
+                title=f'{i}. {car.get("year","")} {car.get("make","")} {car.get("model","")}'
                 detail=f'£{float(car.get("price",0)):,.0f} · {int(car.get("mileage") or 0):,} miles'
                 url=car.get("url")
                 if url:
@@ -596,6 +647,49 @@ with tabs[0]:
                 else:
                     st.write(f'{title} — {detail}')
 
+    st.markdown('<div class="section">MOT intelligence</div>',unsafe_allow_html=True)
+    reg_for_mot=st.session_state.get("imp_reg","")
+    if reg_for_mot:
+        if st.button("CHECK MOT HISTORY",use_container_width=True):
+            try:
+                with st.spinner("Checking official MOT history…"):
+                    st.session_state["mot_lookup"]=dvsa_mot_lookup(reg_for_mot)
+            except Exception as e:
+                st.error("MOT lookup failed.")
+                with st.expander("Technical detail"): st.code(str(e))
+        mot=st.session_state.get("mot_lookup")
+        if mot and not mot.get("configured"):
+            st.info("MOT panel is ready. Add the free DVSA MOT API credentials in Streamlit Secrets to switch it on.")
+        elif mot and mot.get("data"):
+            ms=mot_risk_summary(mot["data"])
+            latest=ms["latest"]
+            x1,x2,x3=st.columns(3)
+            x1.metric("Latest MOT",str(latest.get("testResult","—")).title())
+            x2.metric("MOT mileage",f'{int(latest.get("odometerValue") or 0):,}' if str(latest.get("odometerValue","")).isdigit() else "—")
+            x3.metric("Expiry",str(latest.get("expiryDate","—")))
+            flags=[]
+            if ms["fails"]: flags.append(f'{ms["fails"]} historic failure(s)')
+            if ms["mileage_warning"]: flags.append("Mileage decreased between recorded tests")
+            repeated=[f"{k} ×{v}" for k,v in ms["recurring"].items() if v>=2]
+            if repeated: flags.append("Recurring: "+", ".join(repeated))
+            if flags: st.warning(" · ".join(flags))
+            with st.expander("Full MOT history"):
+                for t in ms["tests"]:
+                    st.markdown(f'**{str(t.get("completedDate",""))[:10]} — {t.get("testResult","")} — {t.get("odometerValue","—")} {t.get("odometerUnit","")}**')
+                    for d in t.get("defects",[]) or []:
+                        st.write(f'• {d.get("type","")}: {d.get("text","")}')
+    else:
+        st.caption("Enter the registration above to enable MOT history.")
+
+    with st.expander("DG buying checklist"):
+        st.markdown("""
+- **Identity:** registration, VIN at viewing, make/model/spec and seller identity agree.
+- **History:** MOT mileage progression, service invoices, timing-belt/chain evidence where relevant, recalls/campaigns where applicable.
+- **Condition:** cold start, warning lights, clutch/gearbox, cooling system, brakes, tyres, suspension, leaks, air-con and electrics.
+- **Body:** panel gaps, paint mismatch, corrosion, glass, wheels/tyres and evidence of structural repair.
+- **Commercial:** V5C present, keys, finance/write-off/theft provenance check, realistic prep, warranty/fees, transport and desired contribution.
+- **Exit:** compare against the 10 closest cars and price to sell, not merely to advertise.
+""")
     with st.form("appraise"):
         reg=st.text_input("Registration",value=st.session_state.get("imp_reg",""),placeholder="e.g. CV60 ZLZ").upper().replace(" ","")
         vehicle=st.text_input("Vehicle",value=st.session_state.get("imp_vehicle",""),placeholder="Make, model and derivative")
@@ -603,6 +697,12 @@ with tabs[0]:
         a,b=st.columns(2); retail=a.number_input("Retail estimate (£)",0,150000,int(st.session_state.get("market_retail",0)),50,help="Auto-filled from live market data; editable."); prep=b.number_input("Prep budget (£)",0,20000,400,50)
         a,b=st.columns(2); fees=a.number_input("Fees / warranty (£)",0,10000,250,25); risk="Medium"
         target_margin=st.number_input("Desired contribution / margin (£)",0,20000,int(st.session_state.min_profit),50,help="Your target gross contribution before fixed overhead and tax.")
+        c1,c2=st.columns(2)
+        service_history=c1.selectbox("Service history",["Unknown","Full","Part","None"])
+        keys=c2.selectbox("Keys",["Unknown","2+ keys","1 key"])
+        c1,c2=st.columns(2)
+        provenance=c1.selectbox("Finance / write-off / theft check",["Not checked","Clear","Issue found"])
+        v5c=c2.selectbox("V5C",["Not checked","Present & matches","Missing / mismatch"])
         notes=st.text_area("Notes",value=st.session_state.get("imp_desc",""),placeholder="History, MOT, tyres, damage, keys…")
         risk,risk_reasons=analyse_risk(st.session_state.get("selected_year",2020),mileage,st.session_state.get("selected_make",""),st.session_state.get("selected_model",""),notes)
         mm=st.session_state.get("market_estimate")
@@ -611,6 +711,33 @@ with tabs[0]:
         elif mm.get("count",0)<5:
             if risk=="Low": risk="Medium"
             risk_reasons.append("Fewer than 5 close comparables — valuation confidence reduced")
+        if service_history=="None":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("No service history")
+        elif service_history=="Unknown":
+            risk_reasons.append("Service history not verified")
+        if keys=="1 key":
+            risk_reasons.append("Only one key — allow for replacement cost")
+        if provenance=="Issue found":
+            risk="High"; risk_reasons.append("Provenance check found an issue")
+        elif provenance=="Not checked":
+            if risk=="Low": risk="Medium"
+            risk_reasons.append("Finance/write-off/theft provenance not checked")
+        if v5c=="Missing / mismatch":
+            risk="High"; risk_reasons.append("V5C missing or details mismatch")
+        elif v5c=="Not checked":
+            risk_reasons.append("V5C not verified")
+        mot_saved=st.session_state.get("mot_lookup",{})
+        if mot_saved.get("data"):
+            mr=mot_risk_summary(mot_saved["data"])
+            if mr["dangerous"] or mr["mileage_warning"]:
+                risk="High"
+            elif mr["fails"]>=2 and risk=="Low":
+                risk="Medium"
+            if mr["mileage_warning"]: risk_reasons.append("MOT mileage history needs investigation")
+            if mr["dangerous"]: risk_reasons.append("Dangerous MOT defect recorded")
+            repeated=[k for k,v in mr["recurring"].items() if v>=2]
+            if repeated: risk_reasons.append("Recurring MOT themes: "+", ".join(repeated))
         st.markdown(f"**DG risk analysis: {risk}**")
         st.caption(" · ".join(risk_reasons))
         if st.session_state.get("scan_year") or st.session_state.get("scan_fuel") or st.session_state.get("scan_gearbox"):
@@ -624,6 +751,40 @@ with tabs[0]:
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles</div><span class="chip {klass}">{verdict} · DG SCORE {score}/100</span></div>',unsafe_allow_html=True)
         a,b=st.columns(2); a.metric("Estimated retail",f"£{retail:,.0f}"); b.metric("Potential margin",f"£{margin:,.0f}")
         a,b=st.columns(2); a.metric("Maximum buy",f"£{max_buy:,.0f}"); b.metric("ROI",f"{roi:.1f}%")
+
+        st.markdown('<div class="section">Deal resilience</div>',unsafe_allow_html=True)
+        downside_retail=max(0,retail-500)
+        downside_prep=prep+500
+        stress_retail=downside_retail-(asking+prep+fees+contingency)
+        stress_prep=retail-(asking+downside_prep+fees+contingency)
+        stress_both=downside_retail-(asking+downside_prep+fees+contingency)
+        break_even=asking+prep+fees+contingency
+        q1,q2=st.columns(2); q1.metric("Retail -£500",f"£{stress_retail:,.0f}"); q2.metric("Prep +£500",f"£{stress_prep:,.0f}")
+        q1,q2=st.columns(2); q1.metric("Both hit",f"£{stress_both:,.0f}"); q2.metric("Break-even retail",f"£{break_even:,.0f}")
+
+        strong_buy=max(0,max_buy-250)
+        thin_ceiling=max_buy+250
+        st.markdown(f"""<div class="card"><div class="label">DG buying range</div>
+        <div class="meta"><b>Strong buy:</b> up to £{strong_buy:,.0f}<br>
+        <b>Target buy:</b> £{strong_buy:,.0f}–£{max_buy:,.0f}<br>
+        <b>Thin / negotiate hard:</b> £{max_buy:,.0f}–£{thin_ceiling:,.0f}<br>
+        <b>Above £{thin_ceiling:,.0f}:</b> does not leave enough room for your current target economics.</div></div>""",unsafe_allow_html=True)
+
+        valuation_risk="High" if not mm else ("Medium" if mm.get("count",0)<5 else "Low")
+        mot_risk="Unknown"
+        if mot_saved.get("data"):
+            mr2=mot_risk_summary(mot_saved["data"])
+            mot_risk="High" if (mr2["dangerous"] or mr2["mileage_warning"]) else ("Medium" if mr2["fails"]>=2 else "Low")
+        provenance_risk="High" if provenance=="Issue found" or v5c=="Missing / mismatch" else ("Low" if provenance=="Clear" and v5c=="Present & matches" else "Unknown")
+        mechanical_risk=risk
+        st.markdown('<div class="section">Risk breakdown</div>',unsafe_allow_html=True)
+        r1,r2=st.columns(2); r1.metric("Vehicle / mechanical",mechanical_risk); r2.metric("MOT",mot_risk)
+        r1,r2=st.columns(2); r1.metric("Provenance",provenance_risk); r2.metric("Valuation confidence",valuation_risk)
+
+        if mm and retail:
+            market_mid=mm["retail"]
+            delta=asking-market_mid
+            st.caption(f"Seller asking is £{abs(delta):,.0f} {'below' if delta<0 else 'above'} the comparable median asking price." if delta else "Seller asking matches the comparable median.")
 
         st.markdown('<div class="section">Auto Trader market guide</div>',unsafe_allow_html=True)
         if at_configured() and reg:
@@ -649,7 +810,7 @@ with tabs[0]:
 
         st.markdown('<div class="section">Market trend</div>',unsafe_allow_html=True)
         st.markdown(f'<div class="card"><div class="label">6 month retail value</div><div class="car">£{retail:,.0f} estimated retail</div>{trend_svg()}<div class="meta">Preview only — connect live valuation/comparable data before using this trend for buying decisions.</div></div>',unsafe_allow_html=True)
-        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"listing":listing}])
+        row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"service_history":service_history,"keys":keys,"provenance":provenance,"v5c":v5c,"listing":""}])
         if DATA.exists(): row=pd.concat([pd.read_csv(DATA),row],ignore_index=True)
         row.to_csv(DATA,index=False)
     st.markdown('</div>',unsafe_allow_html=True)
