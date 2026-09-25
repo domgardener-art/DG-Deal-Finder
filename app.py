@@ -301,7 +301,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V75 bundled catalogue default")
+st.caption("DG Deal Finder • V76 canonical valuation flow")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3119,6 +3119,42 @@ with tabs[0]:
         opening_offer_display=f"£{opening_offer:,.0f}" if opening_offer>0 else "N/A"
         contribution_at_ask=recommended_retail-(asking+prep+fees+detected_repair_cost+effective_mot_history_cost+contingency)
         roi_at_ask=(contribution_at_ask/(asking+prep+fees+detected_repair_cost+contingency)*100) if (asking+prep+fees+detected_repair_cost+contingency)>0 else 0
+
+        # V76 canonical valuation handoff: every successful valuation source must
+        # feed the SAME retail value into all commercial calculations.
+        try:
+            _dg_canonical_retail=float(
+                market_retail
+                or (market_estimate or {}).get("retail",0)
+                or (market_estimate or {}).get("market",0)
+                or (market_estimate or {}).get("value",0)
+                or (market_estimate or {}).get("average",0)
+                or 0
+            )
+        except Exception:
+            _dg_canonical_retail=0.0
+        if _dg_canonical_retail > 0:
+            market_retail=_dg_canonical_retail
+            appraisal_retail=_dg_canonical_retail
+            market_average=_dg_canonical_retail
+            # Recalculate the vehicle-specific recommended retail and deal numbers
+            # from the canonical valuation, regardless of which rescue source won.
+            category_adjustment=-(market_average*(category_discount/100.0))
+            modification_adjustment=market_average*(float(modification_pct)/100.0)
+            recommended_retail=max(0,
+                market_average + category_adjustment + modification_adjustment
+                + grade_adjustment + service_adjustment + keys_adjustment
+                + mot_time_adj + manual_retail_adjustment
+            )
+            max_buy=max(0,recommended_retail-prep-fees-detected_repair_cost-effective_mot_history_cost-contingency-target_margin)
+            target_buy=max_buy-250
+            opening_offer=target_buy-250
+            target_buy_display=f"£{target_buy:,.0f}" if target_buy>0 else "N/A"
+            opening_offer_display=f"£{opening_offer:,.0f}" if opening_offer>0 else "N/A"
+            contribution_at_ask=recommended_retail-(asking+prep+fees+detected_repair_cost+effective_mot_history_cost+contingency)
+            roi_at_ask=(contribution_at_ask/(asking+prep+fees+detected_repair_cost+contingency)*100) if (asking+prep+fees+detected_repair_cost+contingency)>0 else 0
+            st.session_state["market_retail"]=market_retail
+            st.session_state["market_estimate"]=market_estimate
 
         # V64 hard guard: missing valuation can never reach commercial cards.
         try:
