@@ -1,7 +1,11 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
+import urllib.parse
+import urllib.request
+import urllib.error
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 DATA = Path(__file__).with_name("deals.csv")
@@ -23,8 +27,165 @@ div[data-testid="stTextInput"] input,div[data-testid="stNumberInput"] input,div[
 <div class="dg-top"><div class="dg-logo">DG <span>DEAL FINDER</span></div><div class="dg-tag">Vehicle sourcing intelligence</div></div>
 """,unsafe_allow_html=True)
 
+st.markdown(r"""
+<style>
+/* V4.1 mobile contrast + spacing repair */
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+  background:#F6F8FC !important;
+  color:#172033 !important;
+}
+.block-container{
+  padding-top:0 !important;
+  padding-left:0 !important;
+  padding-right:0 !important;
+}
+.dg-wrap{padding-left:18px !important;padding-right:18px !important;}
+.dg-top{display:block !important;background:#0B1736 !important;color:#fff !important;position:relative;z-index:2;}
+.dg-top *{color:inherit !important}
+.dg-logo span{color:#70A9FF !important}
+
+/* Force Streamlit labels/help text to remain readable even when phone/browser is in dark mode */
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label,
+.stTextInput label p,.stNumberInput label p,.stTextArea label p,
+[data-testid="stSelectbox"] label p {
+  color:#344054 !important;
+  font-weight:700 !important;
+  opacity:1 !important;
+}
+[data-testid="stCaptionContainer"] p {color:#697386 !important;}
+
+/* Inputs */
+input, textarea,
+[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea {
+  color:#172033 !important;
+  -webkit-text-fill-color:#172033 !important;
+  caret-color:#1769E0 !important;
+  background:#FFFFFF !important;
+}
+input::placeholder, textarea::placeholder {
+  color:#98A2B3 !important;
+  -webkit-text-fill-color:#98A2B3 !important;
+  opacity:1 !important;
+}
+[data-baseweb="input"], [data-baseweb="textarea"],
+[data-baseweb="select"] > div {
+  background:#FFFFFF !important;
+  border-color:#D0D5DD !important;
+  box-shadow:none !important;
+}
+[data-baseweb="input"]:focus-within,
+[data-baseweb="textarea"]:focus-within {
+  border-color:#1769E0 !important;
+  box-shadow:0 0 0 2px rgba(23,105,224,.12) !important;
+}
+/* Number input +/- controls */
+[data-testid="stNumberInput"] button {
+  background:#F2F4F7 !important;
+  color:#172033 !important;
+  border-color:#D0D5DD !important;
+}
+[data-testid="stNumberInput"] button svg {fill:#172033 !important;color:#172033 !important;}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"]{
+  background:#FFFFFF !important;
+  border-bottom:1px solid #E2E8F0 !important;
+  padding:0 12px !important;
+}
+.stTabs [data-baseweb="tab"] p{color:#667085 !important;font-weight:800 !important;}
+.stTabs [aria-selected="true"] p{color:#1769E0 !important;}
+
+/* Reduce oversized mobile controls */
+@media (max-width:640px){
+  .dg-hero{padding-top:18px !important;}
+  .hero{font-size:1.55rem !important;}
+  div[data-baseweb="input"], div[data-baseweb="select"]>div{min-height:48px !important;}
+  input{min-height:46px !important;font-size:16px !important;}
+  [data-testid="stNumberInput"] button{width:46px !important;}
+  .stTextInput,.stNumberInput,.stSelectbox,.stTextArea{margin-bottom:.2rem !important;}
+}
+</style>
+""", unsafe_allow_html=True)
+
 for k,v in {"min_profit":1000,"min_roi":25,"contingency_pct":20}.items():
     if k not in st.session_state: st.session_state[k]=v
+
+
+def _secret(name, default=None):
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+def at_configured():
+    return bool(_secret("AUTOTRADER_API_BASE") and _secret("AUTOTRADER_ADVERTISER_ID") and _secret("AUTOTRADER_API_KEY"))
+
+def at_request(path, params=None, method="GET", body=None):
+    """Generic official Auto Trader Connect request wrapper.
+    Endpoint paths/header names can be set in Streamlit Secrets to match the credentials issued to the account.
+    """
+    base=str(_secret("AUTOTRADER_API_BASE","")).rstrip("/")
+    if not base:
+        raise RuntimeError("Auto Trader API base URL is not configured.")
+    url=base+"/"+path.lstrip("/")
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    headers={"Accept":"application/json","Content-Type":"application/json"}
+    key=str(_secret("AUTOTRADER_API_KEY",""))
+    header=str(_secret("AUTOTRADER_API_KEY_HEADER","Authorization"))
+    prefix=str(_secret("AUTOTRADER_API_KEY_PREFIX","Bearer "))
+    headers[header]=prefix+key
+    extra=_secret("AUTOTRADER_EXTRA_HEADERS",{})
+    if isinstance(extra,dict): headers.update({str(k):str(v) for k,v in extra.items()})
+    data=json.dumps(body).encode() if body is not None else None
+    req=urllib.request.Request(url,data=data,headers=headers,method=method)
+    with urllib.request.urlopen(req,timeout=12) as r:
+        return json.loads(r.read().decode())
+
+def _find_num(obj, names):
+    names={n.lower() for n in names}
+    if isinstance(obj,dict):
+        for k,v in obj.items():
+            if k.lower() in names and isinstance(v,(int,float)): return v
+        for v in obj.values():
+            x=_find_num(v,names)
+            if x is not None: return x
+    elif isinstance(obj,list):
+        for v in obj:
+            x=_find_num(v,names)
+            if x is not None: return x
+    return None
+
+def fetch_at_vehicle(vrm,mileage):
+    path=str(_secret("AUTOTRADER_VEHICLES_PATH","vehicles"))
+    advertiser=str(_secret("AUTOTRADER_ADVERTISER_ID",""))
+    params={"advertiserId":advertiser,"registration":vrm,"odometerReadingMiles":int(mileage),
+            "valuations":"true","vehicleMetrics":"true"}
+    return at_request(path,params=params)
+
+def normalise_at(data):
+    return {
+      "retail":_find_num(data,["retail","retailValuation","retailValue"]),
+      "trade":_find_num(data,["trade","tradeValuation","tradeValue"]),
+      "private":_find_num(data,["private","privateValuation","privateValue"]),
+      "part_exchange":_find_num(data,["partExchange","part_exchange","partExchangeValuation"]),
+      "retail_rating":_find_num(data,["retailRating","retail_rating"]),
+      "days_to_sell":_find_num(data,["daysToSell","days_to_sell"]),
+      "supply":_find_num(data,["supply"]),
+      "demand":_find_num(data,["demand"]),
+      "market_condition":_find_num(data,["marketCondition","market_condition"]),
+    }
+
+def money(v):
+    return "—" if v is None else f"£{v:,.0f}"
+
+def metric_pct(v):
+    if v is None: return "—"
+    # API metrics are documented as decimals; tolerate already-percent values.
+    return f"{(v*100 if abs(v)<=3 else v):.0f}%"
+
 
 def calc(asking,retail,prep,fees,risk):
     contingency=prep*st.session_state.contingency_pct/100
@@ -59,6 +220,25 @@ with tabs[0]:
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles</div><span class="chip {klass}">{verdict} · DG SCORE {score}/100</span></div>',unsafe_allow_html=True)
         a,b=st.columns(2); a.metric("Estimated retail",f"£{retail:,.0f}"); b.metric("Potential margin",f"£{margin:,.0f}")
         a,b=st.columns(2); a.metric("Maximum buy",f"£{max_buy:,.0f}"); b.metric("ROI",f"{roi:.1f}%")
+
+        st.markdown('<div class="section">Auto Trader market guide</div>',unsafe_allow_html=True)
+        if at_configured() and reg:
+            try:
+                at_raw=fetch_at_vehicle(reg,mileage)
+                at=normalise_at(at_raw)
+                st.markdown('<div class="card"><div class="label">Official Auto Trader Connect</div><div class="car">Live market intelligence</div><div class="meta">Vehicle lookup using registration and mileage.</div></div>',unsafe_allow_html=True)
+                c1,c2=st.columns(2); c1.metric("Retail",money(at["retail"])); c2.metric("Trade",money(at["trade"]))
+                c1,c2=st.columns(2); c1.metric("Private",money(at["private"])); c2.metric("Part exchange",money(at["part_exchange"]))
+                c1,c2=st.columns(2); c1.metric("Retail rating","—" if at["retail_rating"] is None else f'{at["retail_rating"]:.0f}/100'); c2.metric("Days to sell","—" if at["days_to_sell"] is None else f'{at["days_to_sell"]:.0f} days')
+                c1,c2=st.columns(2); c1.metric("Demand",metric_pct(at["demand"])); c2.metric("Supply",metric_pct(at["supply"]))
+                st.metric("Market condition",metric_pct(at["market_condition"]))
+            except Exception as e:
+                st.warning("Auto Trader Connect is configured but the live request did not complete. Check the endpoint/header settings in Streamlit Secrets.")
+                with st.expander("Connection detail"):
+                    st.code(str(e))
+        else:
+            st.markdown('<div class="card"><div class="label">Auto Trader Connect</div><div class="car">Ready for official live data</div><div class="meta">Add your Auto Trader Connect production or sandbox credentials in Streamlit Secrets to activate Retail, Trade, Private, Part Exchange, Retail Rating, Days to Sell, Supply, Demand and Market Condition.</div></div>',unsafe_allow_html=True)
+
         st.markdown('<div class="section">Market trend</div>',unsafe_allow_html=True)
         st.markdown(f'<div class="card"><div class="label">6 month retail value</div><div class="car">£{retail:,.0f} estimated retail</div>{trend_svg()}<div class="meta">Preview only — connect live valuation/comparable data before using this trend for buying decisions.</div></div>',unsafe_allow_html=True)
         row=pd.DataFrame([{"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"listing":listing}])
@@ -69,8 +249,8 @@ with tabs[0]:
 with tabs[1]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Market intelligence</div><div class="hero">What is moving?</div><div class="sub">Pricing, demand and days-to-sell signals will live here.</div></div>',unsafe_allow_html=True)
     st.markdown(f'<div class="card"><div class="label">Retail price movement</div><div class="car">Target market trend</div>{trend_svg()}<div class="meta">No fake data: this becomes live once a valuation/comparables source is connected.</div></div>',unsafe_allow_html=True)
-    a,b=st.columns(2); a.metric("Price trend","—"); b.metric("Days to sell","—")
-    a,b=st.columns(2); a.metric("Comparable cars","—"); b.metric("Demand","—")
+    a,b=st.columns(2); a.metric("Retail valuation","LIVE" if at_configured() else "—"); b.metric("Days to sell","LIVE" if at_configured() else "—")
+    a,b=st.columns(2); a.metric("Retail rating","LIVE" if at_configured() else "—"); b.metric("Demand","LIVE" if at_configured() else "—")
     st.markdown('<div class="card"><div class="label">Planned intelligence</div><div class="car">Fastest sellers · biggest margins · falling values</div><div class="meta">Filter by make, model, fuel, age, mileage and retail price band.</div></div></div>',unsafe_allow_html=True)
 
 with tabs[2]:
