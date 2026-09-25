@@ -258,6 +258,38 @@ COMMON_UK_SPECS={
 ("Hyundai","Tucson"):["S","SE","SE Nav","Premium","Premium SE","N Line"],
 }
 
+
+@st.cache_data(ttl=900, show_spinner=False)
+def autoza_comparables(make, model, year, limit=50):
+    """Free live UK dealer-stock comparables via Autoza public read-only API."""
+    params=urlencode({
+        "make":make, "model":model, "min_year":max(1990,int(year)-1),
+        "max_year":int(year)+1, "page":1, "limit":min(int(limit),50)
+    })
+    url="https://autoza.co.uk/api/v1/vehicles?"+params
+    req=urllib.request.Request(url,headers={"User-Agent":"DG-Deal-Finder/1.0","Accept":"application/json"})
+    with urllib.request.urlopen(req,timeout=20) as r:
+        payload=json.loads(r.read().decode())
+    return payload.get("data",[]) if isinstance(payload,dict) else []
+
+def estimate_market_from_comps(rows, target_year, target_mileage):
+    clean=[]
+    for x in rows:
+        try:
+            price=float(x.get("price"))
+            miles=float(x.get("mileage") or 0)
+            year=int(x.get("year"))
+            if price>0: clean.append((price,miles,year,x))
+        except: pass
+    if not clean: return None
+    # Prefer closest mileage; year already constrained to +/-1.
+    clean.sort(key=lambda z:(abs(z[2]-int(target_year))*30000 + abs(z[1]-float(target_mileage or z[1]))))
+    chosen=clean[:min(12,len(clean))]
+    prices=sorted(z[0] for z in chosen)
+    n=len(prices)
+    median=prices[n//2] if n%2 else (prices[n//2-1]+prices[n//2])/2
+    return {"retail":median,"low":prices[0],"high":prices[-1],"count":len(chosen),"rows":[z[3] for z in chosen]}
+
 def dvla_lookup(reg):
     """Official DVLA Vehicle Enquiry Service lookup by VRM."""
     key=str(_secret("DVLA_API_KEY","")).strip()
@@ -481,6 +513,42 @@ with tabs[0]:
         st.session_state["imp_mileage"]=int(cat_mileage)
         st.session_state["imp_reg"]=re.sub(r"[^A-Za-z0-9]","",reg_manual).upper()
         st.success(f"Selected: {label}")
+        st.session_state["selected_make"]=selected_make
+        st.session_state["selected_model"]=selected_model
+        st.session_state["selected_year"]=selected_year
+        if st.button("GET LIVE MARKET ESTIMATE",use_container_width=True,type="primary"):
+            try:
+                with st.spinner("Checking similar UK dealer adverts…"):
+                    comps=autoza_comparables(selected_make,selected_model,selected_year,50)
+                    market=estimate_market_from_comps(comps,selected_year,cat_mileage)
+                if market:
+                    st.session_state["market_estimate"]=market
+                    st.session_state["market_retail"]=int(round(market["retail"]/50)*50)
+                    st.success(f'Found {market["count"]} close comparables · estimated retail £{st.session_state["market_retail"]:,.0f}')
+                else:
+                    st.session_state.pop("market_estimate",None)
+                    st.session_state.pop("market_retail",None)
+                    st.warning("No close live comparables found for that vehicle.")
+            except Exception as e:
+                st.error("Live market lookup is temporarily unavailable.")
+                with st.expander("Technical detail"): st.code(str(e))
+
+    market=st.session_state.get("market_estimate")
+    if market:
+        c1,c2,c3=st.columns(3)
+        c1.metric("Est. retail",f'£{st.session_state.get("market_retail",0):,.0f}')
+        c2.metric("Comparable low",f'£{market["low"]:,.0f}')
+        c3.metric("Comparable high",f'£{market["high"]:,.0f}')
+        st.caption(f'Based on {market["count"]} closest live dealer asking prices. Asking price is not the same as achieved sale price.')
+        with st.expander("Similar cars currently advertised"):
+            for car in market["rows"][:8]:
+                title=f'{car.get("year","")} {car.get("make","")} {car.get("model","")}'
+                detail=f'£{float(car.get("price",0)):,.0f} · {int(car.get("mileage") or 0):,} miles'
+                url=car.get("url")
+                if url:
+                    st.markdown(f'**{title}** — {detail}  \n[View advert]({url})')
+                else:
+                    st.write(f'{title} — {detail}')
 
     with st.form("appraise"):
         reg=st.text_input("Registration",value=st.session_state.get("imp_reg",""),placeholder="e.g. CV60 ZLZ").upper().replace(" ","")
