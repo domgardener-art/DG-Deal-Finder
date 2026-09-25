@@ -1497,12 +1497,11 @@ def autoza_mcp_tools():
     return []
 
 def autoza_price_guide(make="", model=""):
-    """Use the live MCP inputSchema; never guess the price-guide arguments."""
     tools=autoza_mcp_tools()
     tool=next((x for x in tools if isinstance(x,dict) and x.get("name")=="get_uk_price_guide"),None)
     if not tool: return {}
     schema=tool.get("inputSchema") or tool.get("input_schema") or {}
-    props=schema.get("properties") or {}
+    props=schema.get("properties") or {}; required=schema.get("required") or []
     args={}
     for key in props:
         lk=key.lower()
@@ -1510,34 +1509,54 @@ def autoza_price_guide(make="", model=""):
         elif lk in ("model","vehicle_model") and model: args[key]=str(model).strip()
         elif lk in ("query","vehicle","search") and (make or model):
             args[key]=" ".join(x for x in (str(make).strip(),str(model).strip()) if x)
-    if any(k not in args for k in (schema.get("required") or [])): return {}
-    body={"jsonrpc":"2.0","id":2,"method":"tools/call",
-          "params":{"name":"get_uk_price_guide","arguments":args}}
-    try: payloads=_autoza_mcp_post(body)
+    if any(k not in args for k in required): return {}
+    try:
+        payloads=_autoza_mcp_post({"jsonrpc":"2.0","id":2,"method":"tools/call",
+          "params":{"name":"get_uk_price_guide","arguments":args}})
     except Exception: return {}
-    for payload in payloads:
-        result=payload.get("result",{}) if isinstance(payload,dict) else {}
-        structured=result.get("structuredContent") or result.get("structured_content") or {}
-        vals=_dg_market_stats_values(structured,make,model) if structured else {}
-        if vals.get("typical",0)>250:
-            vals["source"]="Autoza UK model price guide"; return vals
-        texts=[str(i.get("text")) for i in (result.get("content") or [])
-               if isinstance(i,dict) and i.get("text")]
-        for txt in texts:
+    def parse_any(x):
+        vals=_dg_market_stats_values(x,make,model) if isinstance(x,(dict,list)) else {}
+        if vals.get("typical",0)>250: return vals
+        blob=json.dumps(x,ensure_ascii=False) if not isinstance(x,str) else x
+        try:
+            vals=_dg_market_stats_values(json.loads(blob),make,model)
+            if vals.get("typical",0)>250: return vals
+        except Exception: pass
+        def labelled(labels):
+            for label in labels:
+                for pat in (rf'{label}\s*(?:asking\s*price|price)?\s*[:=\-–—]?\s*£?\s*([\d,]+(?:\.\d+)?)',
+                            rf'{label}[^£\d]{{0,80}}£\s*([\d,]+(?:\.\d+)?)'):
+                    m=re.search(pat,blob,re.I)
+                    if m:
+                        try: return float(m.group(1).replace(",",""))
+                        except Exception: pass
+            return 0
+        typical=labelled(["typical","median","average","avg"])
+        low=labelled(["lowest","low","minimum","min"]); high=labelled(["highest","high","maximum","max"])
+        if typical>250: return {"typical":typical,"low":low,"high":high,"count":0}
+        gbp=[]
+        for m in re.finditer(r'£\s*([\d,]+(?:\.\d+)?)',blob):
             try:
-                vals=_dg_market_stats_values(json.loads(txt),make,model)
-                if vals.get("typical",0)>250:
-                    vals["source"]="Autoza UK model price guide"; return vals
+                v=float(m.group(1).replace(",",""))
+                if 500<=v<=250000: gbp.append(v)
             except Exception: pass
-        blob=" ".join(texts)
-        def money(pattern):
-            m=re.search(pattern+r"[^£\d]{0,40}£?\s*([\d,]+(?:\.\d+)?)",blob,re.I)
-            return float(m.group(1).replace(",","")) if m else 0
-        typical=money(r"(?:typical|median|average|avg(?:erage)? asking price)")
-        low=money(r"(?:lowest|low)"); high=money(r"(?:highest|high)")
-        if typical>250:
-            return {"typical":typical,"low":low,"high":high,"count":0,
-                    "source":"Autoza UK model price guide"}
+        uniq=[]
+        for v in gbp:
+            if v not in uniq: uniq.append(v)
+        if len(uniq)==3:
+            ordered=sorted(uniq); return {"typical":ordered[1],"low":ordered[0],"high":ordered[2],"count":0}
+        return {}
+    for payload in payloads:
+        if not isinstance(payload,dict): continue
+        result=payload.get("result") or {}
+        for candidate in (result.get("structuredContent"),result.get("structured_content"),result.get("data"),result):
+            if candidate:
+                vals=parse_any(candidate)
+                if vals.get("typical",0)>250: vals["source"]="Autoza UK model price guide"; return vals
+        for item in result.get("content") or []:
+            if isinstance(item,dict):
+                vals=parse_any(item.get("text") or item)
+                if vals.get("typical",0)>250: vals["source"]="Autoza UK model price guide"; return vals
     return {}
 
 def autoza_market_stats(make="", model=""):
@@ -1867,38 +1886,72 @@ def dg_bank_valuation(make, model, year, mileage):
             "confidence":"High" if len(prices)>=8 else ("Medium" if len(prices)>=4 else "Low"),
             "evidence":"DG Market Bank — remembered genuine asking prices","manual_required":False}
 
+def autoza_mcp_comparables(make,model,year,limit=100):
+    tools=autoza_mcp_tools()
+    tool=next((x for x in tools if isinstance(x,dict) and x.get("name")=="search_used_cars"),None)
+    if not tool: return []
+    schema=tool.get("inputSchema") or tool.get("input_schema") or {}
+    props=schema.get("properties") or {}; required=schema.get("required") or []
+    args={}
+    for key in props:
+        lk=key.lower()
+        if lk in ("make","manufacturer") and make: args[key]=str(make).strip()
+        elif lk in ("model","vehicle_model") and model: args[key]=str(model).strip()
+        elif lk in ("year","registration_year") and year: args[key]=int(year)
+        elif lk in ("min_year","year_from") and year: args[key]=max(1990,int(year)-2)
+        elif lk in ("max_year","year_to") and year: args[key]=int(year)+2
+        elif lk in ("limit","page_size","per_page"): args[key]=min(int(limit or 100),100)
+        elif lk in ("query","search") and (make or model):
+            args[key]=" ".join(x for x in (str(make).strip(),str(model).strip()) if x)
+    if any(k not in args for k in required): return []
+    try:
+        payloads=_autoza_mcp_post({"jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"search_used_cars","arguments":args}})
+    except Exception: return []
+    rows=[]
+    def walk(x):
+        if isinstance(x,list):
+            for v in x: walk(v)
+        elif isinstance(x,dict):
+            price=_num(x,"price","asking_price","askingPrice")
+            if price and 500<=price<=250000 and any(k in x for k in ("make","model","year","mileage","title")): rows.append(x)
+            else:
+                for v in x.values(): walk(v)
+        elif isinstance(x,str):
+            try: walk(json.loads(x))
+            except Exception: pass
+    for payload in payloads:
+        if not isinstance(payload,dict): continue
+        result=payload.get("result") or {}
+        walk(result.get("structuredContent") or result.get("structured_content") or result.get("data") or {})
+        for item in result.get("content") or []:
+            if isinstance(item,dict): walk(item.get("text") or item)
+    return rows[:max(1,int(limit or 100))]
+
 def robust_market_value(rows, year, mileage, make="", model="", asking=0):
-    """DG valuation: fresh adverts, remembered bank, then model price guide."""
+    live=list(rows or [])
+    if not live and make and model:
+        try: live=autoza_mcp_comparables(make,model,year,100)
+        except Exception: live=[]
+    try: dg_store_market_observations(live,make,model)
+    except Exception: pass
     try:
-        dg_store_market_observations(rows or [],make,model)
-    except Exception:
-        pass
-    # Fresh adverts first. estimate_market_from_comps returns 'retail', not 'value'.
-    try:
-        direct=estimate_market_from_comps(rows or [],year,mileage)
+        direct=estimate_market_from_comps(live,year,mileage)
         if isinstance(direct,dict):
             v=float(direct.get("retail") or direct.get("value") or direct.get("average") or 0)
             if v>0:
-                direct["value"]=v
-                direct["evidence"]="Fresh live comparable asking prices"
-                direct["manual_required"]=False
+                direct["value"]=v; direct["retail"]=v; direct["evidence"]="Fresh live comparable asking prices"; direct["manual_required"]=False
                 return direct
-    except Exception:
-        pass
+    except Exception: pass
     bank=dg_bank_valuation(make,model,year,mileage)
-    if bank.get("value",0)>0:
-        return bank
+    if bank.get("value",0)>0: return bank
     try:
-        guide=autoza_price_guide(make,model)
-        typical=float(guide.get("typical") or 0)
+        guide=autoza_price_guide(make,model); typical=float(guide.get("typical") or 0)
         if typical>250:
-            return {"value":typical,"retail":typical,
-                    "low":float(guide.get("low") or typical*.90),
-                    "high":float(guide.get("high") or typical*1.10),
-                    "count":int(guide.get("count") or 0),"confidence":"Medium",
-                    "evidence":"Autoza UK model price guide","manual_required":False}
-    except Exception:
-        pass
+            return {"value":typical,"retail":typical,"low":float(guide.get("low") or typical*.90),
+                    "high":float(guide.get("high") or typical*1.10),"count":int(guide.get("count") or 0),
+                    "confidence":"Medium","evidence":"Autoza UK model price guide","manual_required":False}
+    except Exception: pass
     return {"value":0,"retail":0,"low":0,"high":0,"count":0,"confidence":"None",
             "evidence":"No usable free market evidence yet","manual_required":True}
 
@@ -2845,28 +2898,21 @@ with tabs[0]:
         contribution_at_ask=recommended_retail-(asking+prep+fees+detected_repair_cost+effective_mot_history_cost+contingency)
         roi_at_ask=(contribution_at_ask/(asking+prep+fees+detected_repair_cost+contingency)*100) if (asking+prep+fees+detected_repair_cost+contingency)>0 else 0
 
-        # V54 canonical no-zero guard immediately before result rendering.
+        # V64 hard guard: missing valuation can never reach commercial cards.
         try:
             _dg_render_market=float(market_retail or 0)
         except Exception:
             _dg_render_market=0.0
         if _dg_render_market <= 0:
             st.error("NO USABLE MARKET VALUATION — no commercial recommendation calculated.")
-        try:
-            _dg_tools=autoza_mcp_tools()
-            _dg_has_guide=any(isinstance(x,dict) and x.get("name")=="get_uk_price_guide" for x in _dg_tools)
-            st.caption("Valuation diagnostics: Autoza model price guide " + ("detected" if _dg_has_guide else "not reachable/detected") + ".")
-        except Exception:
-            pass
-            st.caption("Free market evidence was insufficient after progressively widening the comparable cohort. Enter a retail estimate to continue.")
-            _dg_manual_render=st.number_input("Retail estimate to use (£)",min_value=0,max_value=250000,value=int(asking or 0),step=100,key="v54_manual_retail")
-            if _dg_manual_render > 0:
-                market_retail=float(_dg_manual_render)
-                st.session_state["market_retail"]=market_retail
-                st.info("Using your manual retail estimate. This is not labelled as market-derived evidence.")
-            else:
-                st.session_state["current_appraisal_ready"]=False
-                st.stop()
+            try:
+                _dg_tools=autoza_mcp_tools()
+                _dg_has_guide=any(isinstance(x,dict) and x.get("name")=="get_uk_price_guide" for x in _dg_tools)
+                st.caption("Valuation source status: free UK price-guide service " + ("reachable." if _dg_has_guide else "not reachable."))
+            except Exception:
+                pass
+            st.session_state["current_appraisal_ready"]=False
+            st.stop()
 
         st.markdown(f'<div class="card"><div class="label">DG appraisal</div><div class="car">{vehicle or "Vehicle appraisal"}</div><div class="meta">{reg or "No registration"} · {mileage:,} miles · {insurance_category}</div></div>',unsafe_allow_html=True)
         st.markdown(f"""<div class="card" style="border:2px solid #111827">
