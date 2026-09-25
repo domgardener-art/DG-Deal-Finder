@@ -448,7 +448,7 @@ def assess_seller_description(text, confirmed=None):
     return {"level":level,"score":score,"flags":flags,"positives":positives,"questions":list(dict.fromkeys(questions)),"conflicts":conflicts}
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
-st.caption("DG Deal Finder • V84 live research import fix")
+st.caption("DG Deal Finder • V86 resilient buying intelligence")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3575,7 +3575,14 @@ with tabs[0]:
 
         _dg_live_intel=dg_web_research(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
         dg_store_intel(_dg_live_intel)
-        _dg_intel=dg_buying_intelligence(selected_make,selected_model,selected_year,selected_engine,selected_fuel,desc)
+        _dg_intel=[]
+        # Legacy starter rules are optional; the live/learned engine must never crash if absent.
+        _dg_legacy=globals().get("dg_buying_intelligence")
+        if callable(_dg_legacy):
+            try:
+                _dg_intel=_dg_legacy(selected_make,selected_model,selected_year,selected_engine,selected_fuel,desc) or []
+            except Exception:
+                _dg_intel=[]
         _dg_intel+=dg_bank_buying_intelligence(selected_make,selected_model,selected_year,selected_engine,selected_fuel,selected_gearbox)
         # Include newly researched findings immediately; dedupe by issue.
         _dg_intel+=_dg_live_intel
@@ -3601,9 +3608,23 @@ with tabs[0]:
                 with st.expander(f'{_i["severity"]} · {_i["issue"]}',expanded=True):
                     st.markdown(f'**Ask the seller:** {_i["ask"]}')
                     st.markdown(f'**Check before buying:** {_i["check"]}')
-                    st.markdown(f'**Potential exposure:** £{_i["cost_low"]:,.0f}–£{_i["cost_high"]:,.0f}')
-                    st.caption(f'Evidence: {_i["source"]}')
+                    _lo=float(_i.get("cost_low",0) or 0); _hi=float(_i.get("cost_high",0) or 0)
+                    _mid=round(((_lo+_hi)/2)/50)*50 if (_lo or _hi) else 0
+                    st.markdown(f'**Estimated repair/work range:** £{_lo:,.0f}–£{_hi:,.0f}')
+                    if _mid:
+                        st.markdown(f'**DG planning allowance:** £{_mid:,.0f}')
+                    st.caption(f'Evidence: {_i.get("source","Sourced model intelligence")} · estimate only; confirm with a garage/parts quote.')
 
+
+        if _dg_intel:
+            _dg_cost_lows=[float(x.get("cost_low",0) or 0) for x in _dg_intel]
+            _dg_cost_highs=[float(x.get("cost_high",0) or 0) for x in _dg_intel]
+            _dg_total_low=sum(_dg_cost_lows); _dg_total_high=sum(_dg_cost_highs)
+            _dg_planning=round((sum((a+b)/2 for a,b in zip(_dg_cost_lows,_dg_cost_highs)))/50)*50
+            if _dg_total_high>0:
+                st.markdown("#### Potential model-specific work exposure")
+                st.markdown(f"**£{_dg_total_low:,.0f}–£{_dg_total_high:,.0f}** if all flagged items required work")
+                st.caption(f"DG midpoint planning allowance: £{_dg_planning:,.0f}. Do not automatically deduct this whole amount: these are risks to investigate, not confirmed faults.")
 
         appraisal_record={"date":datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),"display_name":(reg.strip().upper() if str(reg or "").strip() else vehicle),"registration":reg,"vehicle":vehicle,"mileage":mileage,"asking":asking,"retail_est":appraisal_retail,"prep":prep,"fees":fees,"potential_contribution":round(margin,2),"roi_pct":round(roi,1),"max_buy":round(max_buy,2),"risk":risk,"score":score,"verdict":verdict,"notes":notes,"spec":selected_spec,"service_history":service_history,"keys":keys,"condition_grade":condition_grade,"grade_adjustment":grade_adjustment,"adjustment_age":scaled_mot["age"],"adjustment_market_value":round(market_average,2),"service_adjustment":service_adjustment,"keys_adjustment":keys_adjustment,"category":insurance_category,"category_discount":category_discount,"modification_level":modification_level,"modification_pct":modification_pct,"modification_adjustment":round(modification_adjustment,2),"modification_notes":modification_notes,"description_repair_allowance":detected_repair_cost,"description_repair_items":"; ".join(x["issue"] for x in repair_intel.get("items",[])),"recommended_retail":round(recommended_retail,2),"provenance":provenance,"v5c":v5c,"listing":""}
         st.session_state["current_appraisal_record"]=appraisal_record
