@@ -94,6 +94,22 @@ def scaled_appraisal_adjustments(year, market_value, condition_grade, service_hi
         "mot_reason":why("mot",mot)
     }
 
+
+def safe_market_snapshot(market, fallback_retail=0):
+    """Normalize result-market state so rendering cannot call dict methods on stale/non-dict Streamlit state."""
+    try: fallback=float(fallback_retail or 0)
+    except (TypeError,ValueError): fallback=0.0
+    if not isinstance(market,dict):
+        return {"count":0,"low":fallback,"high":fallback,"rows":[]}
+    def num(key,default):
+        try: return float(market.get(key,default) or default)
+        except (TypeError,ValueError,AttributeError): return float(default)
+    try: count=int(market.get("count",0) or 0)
+    except (TypeError,ValueError,AttributeError): count=0
+    rows=market.get("rows",[])
+    if not isinstance(rows,list): rows=[]
+    return {"count":max(0,count),"low":num("low",fallback),"high":num("high",fallback),"rows":rows}
+
 def dg_buyer_overview(market_average,recommended_retail,asking,max_buy,category,category_adjustment,condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,prep,other_costs,contingency,target_margin,comp_count,market_low,market_high):
     out=[]
     # Defensive normalization: Streamlit reruns/session state can carry older values.
@@ -1235,6 +1251,10 @@ with tabs[0]:
                 with st.expander("Technical detail"): st.code(str(e))
 
     market=st.session_state.get("market_estimate")
+    if market and not isinstance(market,dict):
+        # Ignore stale state from an older deployment instead of crashing.
+        market=None
+        st.session_state["market_estimate"]=None
     if market:
         market_count=int(market.get("count",0) or 0)
         st.metric("Est. retail",f'£{st.session_state.get("market_retail",0):,.0f}')
@@ -1445,7 +1465,8 @@ with tabs[0]:
         </div>""",unsafe_allow_html=True)
 
         st.markdown('<div class="section">DG buyer overview</div>',unsafe_allow_html=True)
-        buyer_notes=dg_buyer_overview(market_average,recommended_retail,asking,max_buy,insurance_category,category_adjustment,condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,prep,fees,contingency,target_margin,int(market.get("count",0) or 0),float(market.get("low",market_average) or market_average),float(market.get("high",market_average) or market_average))
+        result_market=safe_market_snapshot(market,market_average)
+        buyer_notes=dg_buyer_overview(market_average,recommended_retail,asking,max_buy,insurance_category,category_adjustment,condition_grade,service_history,keys,mot_months,mot_analysis,mot_notes_cost,prep,fees,contingency,target_margin,result_market["count"],result_market["low"],result_market["high"])
         for overview_title,overview_body in buyer_notes:
             st.markdown(f"**{overview_title}:** {overview_body}")
         if not isinstance(description_risk,dict):
