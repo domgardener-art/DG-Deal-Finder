@@ -522,13 +522,24 @@ DG_FAILURE_TERMS=[
 def dg_issue_quality(row):
     issue=str(row.get("issue","")).strip()
     low=issue.lower()
-    if not issue or len(issue)<12 or len(issue)>190:return 0
+    if not issue or len(issue)<12 or len(issue)>165:return 0
     if any(p in low for p in DG_BAD_ISSUE_PHRASES):return 0
-    prose_markers=("that is a ","we hold","reliability score","popular cars","get written","newer generation","less time","our database","this page","data is","number of faults","count of","how many","reported faults")
+    prose_markers=(
+        "that is a ","we hold","reliability score","popular cars","get written",
+        "newer generation","less time","our database","this page","data is",
+        "number of faults","count of","how many","reported faults",
+        "no year is","what matters is","car in front of you","on its own",
+        "whether the car","a given year","has had them fixed","you has had",
+        "in front of you","we recommend","remember that","important to note"
+    )
     if any(p in low for p in prose_markers):return 0
-    has_component=any(x in low for x in DG_COMPONENT_TERMS)
+    # A fault title must describe a concrete component/system, not just say "engine/car/fault".
+    specific_components=[x for x in DG_COMPONENT_TERMS if x not in ("engine","fault","damage","oil","water")]
+    has_component=any(x in low for x in specific_components)
     has_failure=any(x in low for x in DG_FAILURE_TERMS)
     if not (has_component and has_failure):return 0
+    # Editorial full-sentence prose is not a fault title.
+    if low.count(" and ")>=3 and any(x in low for x in (" what "," whether "," you "," we ")):return 0
     score=4
     if row.get("source"):score+=1
     if row.get("year_from") or row.get("engine_terms"):score+=1
@@ -721,8 +732,53 @@ def assess_seller_description(text, confirmed=None):
 
 st.set_page_config(page_title="DG Deal Finder", page_icon="🚘", layout="centered", initial_sidebar_state="collapsed")
 
+
+st.markdown('''
+<style>
+:root{
+ --dg-navy:#101828; --dg-ink:#1D2939; --dg-muted:#667085; --dg-line:#E4E7EC;
+ --dg-bg:#F6F8FB; --dg-card:#FFFFFF; --dg-green:#157A55; --dg-soft:#F9FAFB;
+}
+html,body,[class*="css"]{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+.stApp{background:var(--dg-bg);}
+.block-container{max-width:1120px;padding-top:1.1rem;padding-bottom:4rem;}
+h1,h2,h3{color:var(--dg-navy);letter-spacing:-.025em;}
+h1{font-size:1.85rem!important;font-weight:780!important;}
+h2{font-size:1.35rem!important;font-weight:740!important;}
+p,li,label{color:var(--dg-ink);}
+[data-testid="stHeader"]{background:rgba(246,248,251,.92);}
+[data-testid="stMetric"]{background:#fff;border:1px solid var(--dg-line);border-radius:14px;padding:14px 16px;box-shadow:0 1px 2px rgba(16,24,40,.04);}
+[data-testid="stMetricLabel"]{color:var(--dg-muted);}
+[data-testid="stMetricValue"]{color:var(--dg-navy);font-weight:760;}
+div[data-testid="stVerticalBlockBorderWrapper"]{border-color:var(--dg-line)!important;border-radius:16px!important;background:#fff;}
+.stButton>button{min-height:48px;border-radius:10px;font-weight:700;border:1px solid #D0D5DD;box-shadow:none;}
+.stButton>button[kind="primary"]{background:var(--dg-navy);border-color:var(--dg-navy);color:#fff;}
+.stButton>button:hover{border-color:#98A2B3;}
+div[data-baseweb="select"]>div,.stTextInput input,.stNumberInput input,.stTextArea textarea{border-radius:10px!important;border-color:#D0D5DD!important;background:#fff!important;}
+[data-testid="stTabs"] [data-baseweb="tab-list"]{gap:6px;border-bottom:1px solid var(--dg-line);}
+[data-testid="stTabs"] button{font-weight:650;color:#475467;padding-left:12px;padding-right:12px;}
+.dg-intel-card{background:#fff!important;border:1px solid var(--dg-line)!important;border-left-width:5px!important;border-radius:14px!important;padding:18px 18px!important;margin:12px 0!important;box-shadow:0 2px 5px rgba(16,24,40,.045)!important;}
+.dg-intel-card.high{border-left-color:#D92D20!important;background:#fff!important;}
+.dg-intel-card.medium{border-left-color:#F79009!important;background:#fff!important;}
+.dg-intel-card.low{border-left-color:#12B76A!important;background:#fff!important;}
+.dg-issue{font-size:1.05rem!important;line-height:1.45!important;color:var(--dg-navy)!important;font-weight:750!important;}
+.dg-row{font-size:.94rem!important;line-height:1.55!important;color:#475467!important;margin-top:13px!important;}
+.dg-row b{color:#344054!important;font-weight:700!important;}
+.dg-cost{margin-top:14px!important;padding-top:12px!important;border-top:1px solid #EAECF0!important;color:var(--dg-navy)!important;font-size:.98rem!important;font-weight:750!important;}
+.dg-pill{font-size:.72rem!important;letter-spacing:.04em!important;border-radius:999px!important;padding:5px 9px!important;margin-right:10px!important;}
+div[data-testid="stAlert"]{border-radius:12px;border:1px solid var(--dg-line);box-shadow:none;}
+hr{border-color:var(--dg-line);}
+small,.dg-caption{color:var(--dg-muted);}
+@media(max-width:640px){
+ .block-container{padding-left:.85rem;padding-right:.85rem;padding-top:.65rem;}
+ h1{font-size:1.55rem!important}
+ .dg-intel-card{padding:15px!important}
+ .dg-issue{font-size:1rem!important}
+}
+</style>
+''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V105 strict fault-only intelligence")
+st.caption("DG Deal Finder • V106 Demo Edition")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
