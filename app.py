@@ -786,7 +786,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V107 Verified Vehicle Edition")
+st.caption("DG Deal Finder • V108 Offline Catalogue Fix")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3073,6 +3073,23 @@ with st.sidebar.expander("DG UK Vehicle Bank", expanded=False):
 
 tabs=st.tabs(["APPRAISAL","SAVED APPRAISALS","MARKET","SETTINGS"])
 
+
+DG_VERIFIED_MODEL_LIFECYCLES={
+"BMW":{"1 Series":(2004,2026),"2 Series":(2014,2026),"3 Series":(1975,2026),"4 Series":(2013,2026),"5 Series":(1972,2026),"7 Series":(1977,2026),"X1":(2009,2026),"X3":(2004,2026),"X5":(2000,2026)},
+"Audi":{"A1":(2010,2026),"A3":(1996,2026),"A4":(1995,2026),"A5":(2007,2026),"A6":(1994,2026),"Q2":(2016,2026),"Q3":(2011,2026),"Q5":(2008,2026)},
+"Mercedes-Benz":{"A-Class":(1997,2026),"B-Class":(2005,2026),"C-Class":(1993,2026),"E-Class":(1993,2026),"CLA":(2013,2026),"GLA":(2014,2026),"GLC":(2015,2026)},
+"Volkswagen":{"Polo":(1975,2026),"Golf":(1974,2026),"Passat":(1973,2026),"Tiguan":(2007,2026),"T-Roc":(2017,2026),"Touran":(2003,2026),"Up":(2012,2023)},
+"Ford":{"Fiesta":(1976,2023),"Focus":(1998,2026),"Mondeo":(1993,2022),"Kuga":(2008,2026),"Puma":(2019,2026),"EcoSport":(2014,2023)},
+"Vauxhall":{"Corsa":(1993,2026),"Astra":(1980,2026),"Insignia":(2008,2022),"Mokka":(2013,2026),"Grandland":(2017,2026)},
+"Nissan":{"Micra":(1983,2023),"Juke":(2010,2026),"Qashqai":(2007,2026),"X-Trail":(2001,2026),"Note":(2006,2017)},
+"Toyota":{"Aygo":(2005,2022),"Yaris":(1999,2026),"Auris":(2007,2019),"Corolla":(1966,2026),"RAV4":(1994,2026),"C-HR":(2017,2026),"Prius":(2000,2022)},
+"Peugeot":{"208":(2012,2026),"2008":(2013,2026),"308":(2007,2026),"3008":(2009,2026),"5008":(2010,2026),"508":(2011,2026)},
+"Jaguar":{"XE":(2015,2024),"XF":(2008,2024),"F-Pace":(2016,2026),"E-Pace":(2018,2026)},
+"Land Rover":{"Range Rover Evoque":(2011,2026),"Discovery Sport":(2015,2026),"Discovery":(1989,2026),"Range Rover Sport":(2005,2026)}
+}
+def dg_verified_year_models(make,year):
+    y=int(year)
+    return sorted([m for m,(a,b) in DG_VERIFIED_MODEL_LIFECYCLES.get(str(make),{}).items() if a<=y<=b])
 with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG buying desk</div><div class="hero">Appraise a vehicle</div><div class="sub">Vehicle, market, condition and deal risk — one buying decision.</div></div>',unsafe_allow_html=True)
     st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
@@ -3091,7 +3108,11 @@ with tabs[0]:
             # If official UK data says the model was not registered that year, it is not selectable.
             verified_rule_models=sorted({r["model"] for r in DG_YEAR_RULES
                 if r["make"].lower()==str(selected_make).lower() and r["start"]<=int(selected_year)<=r["end"]})
+            # Official catalogue first; verified DG year rules provide offline coverage.
             models=_merge_unique(official_models,verified_rule_models)
+            # Verified mainstream UK model lifecycles used only when live catalogue is unavailable.
+            _offline_year_models=dg_verified_year_models(selected_make,selected_year)
+            models=_merge_unique(models,_offline_year_models)
         except Exception:
             models=[]
     if selected_make and not models:
