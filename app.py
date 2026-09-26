@@ -818,7 +818,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V126 Stable Selector Rollback")
+st.caption("DG Deal Finder • V126 Trusted Vehicle Bank")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3212,29 +3212,24 @@ def dg_cascade_options(make,model,year,fuel=""):
     return out
 
 
-def dg_broad_selector_choices(make,model,year,fuel=""):
-    """Stable pre-strict architecture: exact rows first, then known model rows.
-    Never lets placeholder continuity rows erase usable specs/engines/gearboxes."""
-    bank=dg_vehicle_bank()
-    out={"fuels":[],"specs":[],"engines":[],"gearboxes":[]}
-    if bank.empty:return out
-    def n(v):return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
-    rows=bank[(bank["make"].map(n)==n(make))&(bank["model"].map(n)==n(model))].copy()
-    if rows.empty:return out
-    exact=rows[rows["year"].astype(str).str.strip()==str(year)]
-    def good(df,col):
-        if df.empty:return []
-        return _merge_unique([str(x).strip() for x in df[col].tolist()
-            if str(x).strip().lower() not in ("","not confirmed","unknown","nan")])
-    out["fuels"]=good(exact,"fuel") or good(rows,"fuel")
-    if fuel:
-        ef=exact[exact["fuel"].map(n).isin([n(fuel),"","notconfirmed"])]
-        rf=rows[rows["fuel"].map(n).isin([n(fuel),"","notconfirmed"])]
-    else:
-        ef,rf=exact,rows
-    for col,key in [("spec","specs"),("engine","engines"),("gearbox","gearboxes")]:
-        out[key]=good(ef,col) or good(rf,col) or good(exact,col) or good(rows,col)
-    return out
+def dg_vehicle_match_confidence(make,model,year,fuel="",spec="",engine="",gearbox=""):
+    try:
+        df=dg_vehicle_bank()
+        def n(v):return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
+        hit=df[(df["make"].map(n)==n(make))&(df["model"].map(n)==n(model))&(df["year"].astype(str).str.strip()==str(year))]
+        if fuel: hit=hit[hit["fuel"].map(n).isin([n(fuel),"","notconfirmed"])]
+        for col,val in [("spec",spec),("engine",engine),("gearbox",gearbox)]:
+            if val:
+                exact=hit[hit[col].map(n)==n(val)]
+                if not exact.empty: hit=exact
+        if hit.empty:return ("Manual / unresolved","Confirm against advert, V5C or VIN before purchase.")
+        levels=set(str(x) for x in hit.get("evidence_level",[]) if str(x).strip())
+        if "Verified source" in levels:return ("Verified source","Supported by an official/public source record.")
+        if "Historical evidence" in levels:return ("Historical evidence","Historical range evidence found; confirm the exact car from advert/V5C.")
+        if "DG reference" in levels:return ("DG reference","Known reference combination; confirm exact derivative before purchase.")
+        return ("Model-level only","Model/year is known, but exact derivative is not independently verified.")
+    except Exception:
+        return ("Unresolved","Confirm the exact vehicle before purchase.")
 
 def dg_continuity_fuels(make,model,year):
     """Last resort only: unknown is safer than inventing fuel choices."""
@@ -3371,7 +3366,6 @@ with tabs[0]:
         fuel_options=dg_continuity_fuels(selected_make,selected_model,selected_year)
     selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,index=fuel_index,disabled=not bool(selected_model))
     if selected_fuel.startswith("—"): selected_fuel=""
-    _dg_stable_choices=dg_broad_selector_choices(selected_make,selected_model,selected_year,selected_fuel) if selected_model else {"fuels":[],"specs":[],"engines":[],"gearboxes":[]}
     _dg_local_opts=dg_cascade_options(selected_make,selected_model,selected_year,selected_fuel) if selected_model else {"fuels":[],"specs":[],"engines":[],"gearboxes":[]}
 
     if taxonomy_verified:
@@ -3404,16 +3398,11 @@ with tabs[0]:
         # don't leak broad model-level DG specs from other years into a supposedly safe selector.
         spec_options=_merge_unique(tax_specs if taxonomy_verified else [])
     if spec_is_year_constrained:
-        st.caption(f"DG is showing the best available year/model choices from the bundled catalogue.")
+        st.caption(f"Spec list filtered to {selected_year} UK registrations — {len(spec_options)} valid choice(s).")
 
     # V125 DEMO STABILITY: the bundled local cascade is authoritative.
     # Old year filters may enrich it, but may never erase known local choices.
     spec_options=_merge_unique(_dg_local_opts.get("specs",[]),spec_options)
-    spec_options=[x for x in spec_options if str(x).strip().lower() not in ("","not confirmed","unknown")]
-    _spec_manual_needed=bool(selected_model and selected_fuel and not spec_options)
-    # V126: restore the proven broad selector behaviour. Strict evidence may inform,
-    # but it may not remove useful known model choices from the dropdown.
-    spec_options=_merge_unique(_dg_stable_choices.get("specs",[]),spec_options)
     spec_options=[x for x in spec_options if str(x).strip().lower() not in ("","not confirmed","unknown")]
     _spec_manual_needed=bool(selected_model and selected_fuel and not spec_options)
     selected_spec=st.selectbox("Spec / derivative",["— Choose spec —"]+spec_options,
@@ -3462,15 +3451,11 @@ with tabs[0]:
     if not year_engine_evidence:
         engine_options=_merge_unique(tax_engines if taxonomy_verified else [],_dg_local_opts.get("engines",[]))
     if engine_is_year_constrained:
-        st.caption(f"DG is showing the best available engine choices from the bundled catalogue.")
+        st.caption(f"Engine list filtered to {selected_year} UK registrations — {len(engine_options)} valid choice(s).")
     elif selected_model:
         st.caption("Year-specific official engine evidence is limited. Catalogue choices remain available; verify unusual or imported vehicles manually.")
 
     engine_options=_merge_unique(_dg_local_opts.get("engines",[]),engine_options)
-    engine_options=[x for x in engine_options if str(x).strip().lower() not in ("","not confirmed","unknown")]
-    _engine_manual_needed=bool(selected_model and selected_fuel and not engine_options)
-    # V126 stable engine list: known model/fuel engines always remain selectable.
-    engine_options=_merge_unique(_dg_stable_choices.get("engines",[]),engine_options)
     engine_options=[x for x in engine_options if str(x).strip().lower() not in ("","not confirmed","unknown")]
     _engine_manual_needed=bool(selected_model and selected_fuel and not engine_options)
     selected_engine=st.selectbox("Engine / powertrain",["— Choose engine —"]+engine_options,
@@ -3490,16 +3475,17 @@ with tabs[0]:
     gearbox_options=_merge_unique(_dg_local_opts.get("gearboxes",[]),gearbox_options)
     gearbox_options=[x for x in gearbox_options if str(x).strip().lower() not in ("","not confirmed","unknown")]
     _gearbox_manual_needed=bool(selected_model and selected_fuel and not gearbox_options)
-    # V126 stable gearbox list.
-    gearbox_options=_merge_unique(_dg_stable_choices.get("gearboxes",[]),gearbox_options)
-    gearbox_options=[x for x in gearbox_options if str(x).strip().lower() not in ("","not confirmed","unknown")]
-    _gearbox_manual_needed=bool(selected_model and selected_fuel and not gearbox_options)
     selected_gearbox=st.selectbox("Gearbox",["— Choose gearbox —"]+gearbox_options,
         key=f"gearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}",
         disabled=not bool(selected_model))
     if selected_gearbox.startswith("—") or selected_gearbox=="Not confirmed": selected_gearbox=""
     if _gearbox_manual_needed:
         selected_gearbox=st.selectbox("Gearbox",["","Manual","Automatic","DSG","CVT","Other"],key=f"manualgearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}")
+
+    if selected_make and selected_model and selected_year:
+        _match_level,_match_note=dg_vehicle_match_confidence(selected_make,selected_model,selected_year,selected_fuel,selected_spec,selected_engine,selected_gearbox)
+        _match_icon={"Verified source":"✓","Historical evidence":"◐","DG reference":"◐","Model-level only":"○","Manual / unresolved":"○","Unresolved":"○"}.get(_match_level,"○")
+        st.caption(f"{_match_icon} Vehicle match: {_match_level} — {_match_note}")
 
     historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
     if selected_engine and historical_engines:
