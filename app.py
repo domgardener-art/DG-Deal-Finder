@@ -460,6 +460,19 @@ def dg_model_fault_page(make,model,year,engine,fuel,gearbox):
 DG_ISSUE_BANK=Path(__file__).with_name("dg_issue_bank.csv")
 
 @st.cache_data(show_spinner=False)
+def dg_issue_evidence_label(row):
+    et=str(row.get("evidence_type","")).lower()
+    conf=str(row.get("confidence","")).lower()
+    if "not a model-specific" in et or conf=="general":
+        return "GENERAL BUYING CHECK"
+    if "mot" in et:
+        return "MOT OBSERVED PATTERN"
+    if "recall verification" in et:
+        return "RECALL CHECK"
+    if "recall" in et:
+        return "OFFICIAL RECALL / SAFETY"
+    return "KNOWN / SOURCED ISSUE"
+
 def dg_load_issue_bank():
     try:
         import csv
@@ -786,7 +799,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V110 Complete Cascade Fix")
+st.caption("DG Deal Finder • V114 Maximum Offline Evidence")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -1147,6 +1160,7 @@ def free_models_for_make_year(make, year):
 # model, fuel and engine-size band. This is a bulk government CSV, cached once;
 # it is not queried per vehicle like an API.
 DFT_UK_CATALOGUE_URL="https://assets.publishing.service.gov.uk/media/69ef3ecf9ca985145673b9ec/df_VEH0270.csv"
+DFT_CATALOGUE_SOURCE_NOTE="DfT/DVLA df_VEH0270 — UK first registrations by make, generic model, detailed model, fuel and engine-size band; official source updated 23 Sep 2026."
 
 def _display_make(value):
     raw=str(value or "").strip()
@@ -3096,10 +3110,10 @@ def dg_verified_model_fuels(make,model,year):
     return [f for f,a,b in DG_MODEL_FUEL_ERAS.get(str(make),{}).get(str(model),[]) if a<=y<=b]
 
 def dg_continuity_fuels(make,model,year):
+    """Last resort only: unknown is safer than inventing fuel choices."""
     y=int(year); m=str(model).lower()
     if y>=2020 and any(x in m for x in ("taycan","zoe","leaf","i3")): return ["Electric"]
-    if y<=2019: return ["Petrol","Diesel"]
-    return ["Petrol","Diesel","Hybrid","Plug-in Hybrid","Electric"]
+    return ["Not confirmed"]
 def dg_not_confirmed(options):
     vals=[str(x).strip() for x in (options or []) if str(x).strip() and not str(x).startswith("—")]
     return vals if vals else ["Not confirmed"]
@@ -3108,9 +3122,10 @@ with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG buying desk</div><div class="hero">Appraise a vehicle</div><div class="sub">Vehicle, market, condition and deal risk — one buying decision.</div></div>',unsafe_allow_html=True)
     st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
     st.caption("Choose make and year first. Every following choice is narrowed by evidence from the selections above — DG will not deliberately offer an unverified model/fuel/spec combination.")
-    official_catalogue,official_catalogue_error=load_official_uk_catalogue()
-    catalogue_makes=official_uk_makes(official_catalogue)
-    make_options=_merge_unique(UK_MAKES,catalogue_makes)
+    # V112: selector is deliberately 100% local. Network enrichment must never block appraisal.
+    official_catalogue=pd.DataFrame()
+    official_catalogue_error="Local-first selector"
+    make_options=_merge_unique(UK_MAKES,sorted({str(x).strip() for x in dg_vehicle_bank().get("make",pd.Series(dtype=str)).dropna() if str(x).strip()}))
     a,b=st.columns(2)
     selected_make=a.selectbox("Make",[""]+make_options)
     selected_year=b.selectbox("Year",list(range(2026,1995,-1)),index=16)
@@ -3129,11 +3144,17 @@ with tabs[0]:
             models=_merge_unique(models,_offline_year_models)
         except Exception:
             models=[]
+    _model_year_verified=bool(models)
     if selected_make and not models:
-        st.warning("DG cannot verify a UK model for this make/year, so model selection is locked rather than guessing.")
+        _bank=dg_vehicle_bank()
+        if not _bank.empty:
+            _bm=_bank[_bank["make"].astype(str).str.lower().eq(str(selected_make).lower())]
+            models=sorted({str(x).strip() for x in _bm["model"].dropna() if str(x).strip()})
+        if models:
+            st.caption("Exact model/year coverage is incomplete in the offline bank. DG is showing known model families so the appraisal can continue; exact year/spec remains unconfirmed.")
     selected_model=st.selectbox("Model",["— Choose model —"]+models,
         disabled=not bool(selected_make) or not bool(models),
-        help="Only models evidenced for the selected year are offered.")
+        help="Year-verified models are preferred. Where the offline bank is incomplete, DG shows known model families without pretending the exact year is verified.")
     if selected_model=="— Choose model —": selected_model=""
     lookup_model=lookup_model_name(selected_make,selected_model)
 
@@ -3148,7 +3169,9 @@ with tabs[0]:
     official_has_choices=any(official_precheck)
     # Speed: official UK bulk data is local-in-memory after the first cached load.
     # Only call the external taxonomy service when official data has no useful choices.
-    if selected_make and selected_model and not official_has_choices:
+    # V112: no external taxonomy request on dropdown changes. It caused refresh hangs
+    # and made basic appraisal dependent on third-party availability.
+    if False and selected_make and selected_model and not official_has_choices:
         try: taxonomy=fleetbyte_variants(selected_make,lookup_model,selected_year)
         except Exception as e: taxonomy_error=str(e)
 
@@ -3193,7 +3216,7 @@ with tabs[0]:
     taxonomy_verified=bool(taxonomy)
     official_catalogue_loaded=not official_catalogue.empty
     if not official_catalogue_loaded:
-        st.caption("Using DG bundled UK vehicle catalogue. Live catalogue enrichment is temporarily unavailable.")
+        st.caption("Using DG's bundled offline UK vehicle bank — vehicle selection does not depend on an API or live catalogue.")
 
     # Fuel first: this immediately removes petrol/diesel/hybrid/EV derivatives and engines
     # that cannot belong to the selected fuel type for the exact chosen year.
@@ -3320,9 +3343,7 @@ with tabs[0]:
         else:
             st.warning("YEAR / ENGINE CHECK LIMITED — "+combo_check["reason"]+" DG will use the available catalogue and market evidence; verify unusual/imported cars manually.")
 
-    with st.expander("Exact engine not listed?"):
-        manual_engine=st.text_input("Engine override",placeholder="e.g. 2.0L")
-        if manual_engine.strip(): selected_engine=manual_engine.strip()
+    # Exact engine may remain unconfirmed; DG never requires a guessed engine to value the car.
 
     if selected_make and selected_model:
         if taxonomy_verified:
