@@ -818,7 +818,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V126 Trusted Vehicle Bank")
+st.caption("DG Deal Finder • V126 Populated Vehicle Bank")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3460,30 +3460,6 @@ with tabs[0]:
         key=f"gearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}",
         disabled=not bool(selected_model))
     if selected_gearbox.startswith("—") or selected_gearbox=="Not confirmed": selected_gearbox=""
-    # Trust layer: show the strength of the selected vehicle identity.
-    _trust_bank=dg_vehicle_bank()
-    _trust_level="Manual / verify"
-    _trust_note="Confirm the exact derivative from the advert, V5C or manufacturer data before buying."
-    try:
-        def _tn(v): return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
-        _tr=_trust_bank[(_trust_bank["make"].map(_tn)==_tn(selected_make))&
-                        (_trust_bank["model"].map(_tn)==_tn(selected_model))&
-                        (_trust_bank["year"].astype(str).str.strip()==str(selected_year))]
-        if selected_fuel: _tr=_tr[_tr["fuel"].map(_tn).isin([_tn(selected_fuel),"","notconfirmed"])]
-        if selected_spec: _tr=_tr[_tr["spec"].map(_tn)==_tn(selected_spec)]
-        if selected_engine: _tr=_tr[_tr["engine"].map(_tn)==_tn(selected_engine)]
-        if selected_gearbox: _tr=_tr[_tr["gearbox"].map(_tn)==_tn(selected_gearbox)]
-        if not _tr.empty:
-            _trust_level=str(_tr.iloc[0].get("evidence_level") or "Reference evidence")
-            _trust_note=str(_tr.iloc[0].get("verification_note") or _trust_note)
-    except Exception:
-        pass
-    if selected_model and selected_fuel:
-        _trust_icon="✓" if _trust_level in ("Official/registered evidence","Historical evidence") else "i"
-        st.markdown(f"""<div style="margin:.35rem 0 1rem;padding:.7rem .85rem;border:1px solid #D0D5DD;border-radius:10px;background:#fff">
-        <div style="font-weight:750;color:#101828;font-size:.88rem">Vehicle match {_trust_icon} · {_trust_level}</div>
-        <div style="color:#667085;font-size:.78rem;margin-top:.15rem">{_trust_note}</div></div>""",unsafe_allow_html=True)
-
     if _gearbox_manual_needed:
         selected_gearbox=st.selectbox("Gearbox",["","Manual","Automatic","DSG","CVT","Other"],key=f"manualgearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}")
 
