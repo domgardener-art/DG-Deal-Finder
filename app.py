@@ -818,7 +818,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V124 Demo Runtime Fix")
+st.caption("DG Deal Finder • V126 Trusted Vehicle Bank")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3155,6 +3155,12 @@ div[data-testid="stTabs"] [data-baseweb="tab-highlight"]{display:none!important;
 }
 </style>
 """,unsafe_allow_html=True)
+st.markdown("""<style>
+.dg-trust{margin:10px 0 14px;padding:10px 12px;border-radius:10px;border:1px solid #E4E7EC;background:#fff;font-size:13px;color:#344054}
+.dg-trust.ok{border-left:5px solid #12B76A}.dg-trust.warn{border-left:5px solid #F79009}
+.dg-trust span{color:#667085;font-size:12px}
+</style>
+""",unsafe_allow_html=True)
 tabs=st.tabs(["APPRAISAL","SAVED APPRAISALS","MARKET","SETTINGS"])
 
 
@@ -3381,14 +3387,18 @@ with tabs[0]:
     if spec_is_year_constrained:
         st.caption(f"Spec list filtered to {selected_year} UK registrations — {len(spec_options)} valid choice(s).")
 
-    spec_options=[x for x in _merge_unique(spec_options) if str(x).strip().lower()!="not confirmed"]
-    if selected_model and selected_fuel and not spec_options:
-        spec_options=["Not confirmed"]
+    # V125 DEMO STABILITY: the bundled local cascade is authoritative.
+    # Old year filters may enrich it, but may never erase known local choices.
+    spec_options=_merge_unique(_dg_local_opts.get("specs",[]),spec_options)
+    spec_options=[x for x in spec_options if str(x).strip().lower() not in ("","not confirmed","unknown")]
+    _spec_manual_needed=bool(selected_model and selected_fuel and not spec_options)
     selected_spec=st.selectbox("Spec / derivative",["— Choose spec —"]+spec_options,
         key=f"spec_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}",
         disabled=not bool(selected_model),
         help="DG combines structured taxonomy when available, clean live-advert trim fields and built-in UK model trim suggestions. Suggestions are not presented as authoritative historical derivative data.")
     if selected_spec.startswith("—"): selected_spec=""
+    if _spec_manual_needed:
+        selected_spec=st.text_input("Spec / derivative",value="",placeholder="Type the trim from the advert, e.g. SE, Sport, S line",key=f"manualspec_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}").strip()
     if taxonomy_verified:
         st.caption("Fuel → year-valid spec → spec-valid engine → gearbox. Official UK year data constrains choices where available; fallback data is used only where official detail is unavailable.")
     else:
@@ -3432,11 +3442,15 @@ with tabs[0]:
     elif selected_model:
         st.caption("Year-specific official engine evidence is limited. Catalogue choices remain available; verify unusual or imported vehicles manually.")
 
-    engine_options=dg_not_confirmed(engine_options) if selected_model and selected_fuel else engine_options
+    engine_options=_merge_unique(_dg_local_opts.get("engines",[]),engine_options)
+    engine_options=[x for x in engine_options if str(x).strip().lower() not in ("","not confirmed","unknown")]
+    _engine_manual_needed=bool(selected_model and selected_fuel and not engine_options)
     selected_engine=st.selectbox("Engine / powertrain",["— Choose engine —"]+engine_options,
         key=f"engine_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}",
         disabled=not bool(selected_model))
     if selected_engine.startswith("—") or selected_engine=="Not confirmed": selected_engine=""
+    if _engine_manual_needed:
+        selected_engine=st.text_input("Engine / powertrain",value="",placeholder="Type engine, e.g. 1.2 TFSI",key=f"manualengine_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}").strip()
 
     if taxonomy_verified:
         final_rows,_,_,_,tax_gearboxes=taxonomy_options(
@@ -3445,11 +3459,40 @@ with tabs[0]:
     else:
         _exact_local=local_vehicle_choices(selected_make,selected_model,selected_year)
         gearbox_options=_merge_unique(gearboxes,_exact_local[2],_dg_local_opts.get("gearboxes",[]))
-    gearbox_options=dg_not_confirmed(gearbox_options) if selected_model and selected_fuel else gearbox_options
+    gearbox_options=_merge_unique(_dg_local_opts.get("gearboxes",[]),gearbox_options)
+    gearbox_options=[x for x in gearbox_options if str(x).strip().lower() not in ("","not confirmed","unknown")]
+    _gearbox_manual_needed=bool(selected_model and selected_fuel and not gearbox_options)
     selected_gearbox=st.selectbox("Gearbox",["— Choose gearbox —"]+gearbox_options,
         key=f"gearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}",
         disabled=not bool(selected_model))
     if selected_gearbox.startswith("—") or selected_gearbox=="Not confirmed": selected_gearbox=""
+    if _gearbox_manual_needed:
+        selected_gearbox=st.selectbox("Gearbox",["","Manual","Automatic","DSG","CVT","Other"],key=f"manualgearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}")
+
+    # V126: transparent confidence indicator for the selected vehicle combination.
+    _trust_label="Model-level fallback"
+    _trust_note="Confirm the exact derivative from the advert/V5C before buying."
+    try:
+        _tb=dg_vehicle_bank()
+        if not _tb.empty and selected_make and selected_model:
+            def _tn(v): return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
+            _hit=_tb[(_tb["make"].map(_tn)==_tn(selected_make))&(_tb["model"].map(_tn)==_tn(selected_model))]
+            if selected_year:_hit=_hit[_hit["year"].astype(str).str.strip()==str(selected_year)]
+            if selected_fuel:_hit=_hit[_hit["fuel"].map(_tn)==_tn(selected_fuel)]
+            if selected_spec:_hit=_hit[_hit["spec"].map(_tn)==_tn(selected_spec)]
+            if selected_engine:_hit=_hit[_hit["engine"].map(_tn)==_tn(selected_engine)]
+            if selected_gearbox:_hit=_hit[_hit["gearbox"].map(_tn)==_tn(selected_gearbox)]
+            if not _hit.empty:
+                _levels=[str(x) for x in _hit.get("trust_level",pd.Series(dtype=str)).tolist() if str(x).strip()]
+                if "Verified evidence" in _levels:_trust_label="Verified evidence"
+                elif "Strong evidence" in _levels:_trust_label="Strong historical evidence"
+                elif "Structured evidence" in _levels:_trust_label="Structured catalogue evidence"
+                _srcs=[str(x) for x in _hit.get("source",pd.Series(dtype=str)).tolist() if str(x).strip()]
+                if _srcs:_trust_note="Source: "+_srcs[0]
+    except Exception:
+        pass
+    _trust_class="ok" if _trust_label in ("Verified evidence","Strong historical evidence") else "warn"
+    st.markdown(f'<div class="dg-trust {_trust_class}"><b>Vehicle match:</b> {_trust_label}<br><span>{_trust_note}</span></div>',unsafe_allow_html=True)
 
     historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
     if selected_engine and historical_engines:
