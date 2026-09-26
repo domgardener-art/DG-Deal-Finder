@@ -569,6 +569,14 @@ def dg_clean_issue_rows(rows):
                 duplicate=True;break
         if not duplicate:final.append(r)
     return final
+def dg_display_issue_ok(row):
+    issue=str(row.get("issue","")).strip().lower()
+    if not issue:return False
+    bad=("no year is","what matters is","car in front of you","reliability score",
+         "count of the faults","popular cars get written","years and engines with",
+         "newer generation has had less time","where this data comes from")
+    return not any(x in issue for x in bad)
+
 @st.cache_data(ttl=86400,show_spinner=False)
 def dg_web_research(make,model,year,engine,fuel,gearbox):
     """Live no-key research with explicit status. Never equates blocked search with 'no issues'."""
@@ -778,7 +786,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V106 Demo Edition")
+st.caption("DG Deal Finder • V107 Verified Vehicle Edition")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3068,7 +3076,7 @@ tabs=st.tabs(["APPRAISAL","SAVED APPRAISALS","MARKET","SETTINGS"])
 with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG buying desk</div><div class="hero">Appraise a vehicle</div><div class="sub">Vehicle, market, condition and deal risk — one buying decision.</div></div>',unsafe_allow_html=True)
     st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
-    st.caption("Choose make, year and model. DG uses its cached official UK catalogue first, with live/API data only as enrichment.")
+    st.caption("Choose make and year first. Every following choice is narrowed by evidence from the selections above — DG will not deliberately offer an unverified model/fuel/spec combination.")
     official_catalogue,official_catalogue_error=load_official_uk_catalogue()
     catalogue_makes=official_uk_makes(official_catalogue)
     make_options=_merge_unique(UK_MAKES,catalogue_makes)
@@ -3078,18 +3086,19 @@ with tabs[0]:
     models=[]
     if selected_make:
         try:
-            embedded_models=free_models_for_make_year(selected_make,selected_year)
             official_models=official_uk_models(official_catalogue,selected_make,selected_year)
-            models=_merge_unique(official_models,embedded_models)
-            if selected_make=="Porsche":
-                models=_merge_unique(models,["911","Cayman","Boxster","Macan","Cayenne","Panamera","Taycan"])
+            # V107: NEVER merge the timeless embedded model list into a selected year.
+            # If official UK data says the model was not registered that year, it is not selectable.
+            verified_rule_models=sorted({r["model"] for r in DG_YEAR_RULES
+                if r["make"].lower()==str(selected_make).lower() and r["start"]<=int(selected_year)<=r["end"]})
+            models=_merge_unique(official_models,verified_rule_models)
         except Exception:
-            models=free_models_for_make_year(selected_make,selected_year)
-    selected_model=st.selectbox("Model",["— Choose model —"]+models,disabled=not bool(selected_make))
-    with st.expander("Model missing from the list?"):
-        manual_model=st.text_input("Manual model",placeholder="Only use this when the actual model is missing, e.g. Octavia")
-        if manual_model.strip():
-            selected_model=manual_model.strip()
+            models=[]
+    if selected_make and not models:
+        st.warning("DG cannot verify a UK model for this make/year, so model selection is locked rather than guessing.")
+    selected_model=st.selectbox("Model",["— Choose model —"]+models,
+        disabled=not bool(selected_make) or not bool(models),
+        help="Only models evidenced for the selected year are offered.")
     if selected_model=="— Choose model —": selected_model=""
     lookup_model=lookup_model_name(selected_make,selected_model)
 
@@ -3121,35 +3130,30 @@ with tabs[0]:
     derivatives=_merge_unique(official_specs,derivatives)
     if any((official_engines,official_fuels,official_specs)):
         choice_sources=["official UK bulk catalogue"]+choice_sources
-    # Final resilience layer: external sources can ADD choices but cannot erase known
-    # model-level data. Manual overrides remain available for exact historical variants.
+    # V107 STRICT CASCADE: broad model-level fallbacks must never create impossible combinations.
+    # Official year evidence wins. Structured taxonomy is second. DG verified year rules are third.
     dg_engines,dg_fuels,dg_gearboxes,dg_specs=local_vehicle_choices(selected_make,selected_model,selected_year)
-    engines=_merge_unique(engines,dg_engines)
-    fuels=_merge_unique(fuels,dg_fuels)
-    gearboxes=_merge_unique(gearboxes,dg_gearboxes)
-    derivatives=_merge_unique(derivatives,dg_specs)
-    # V79: fill thin bundled records from current official DfT/DVLA UK registration data.
-    _gov_engines,_gov_fuels,_gov_specs=dg_official_vehicle_choices(selected_make,selected_model,selected_year)
-    engines=_merge_unique(_gov_engines,engines)
-    fuels=_merge_unique(_gov_fuels,fuels)
-    derivatives=_merge_unique(_gov_specs,derivatives)
-    # V77 gap closer: common models must not dead-end just because the bundled
-    # bank lacks an exact-year row. Fall back to all known rows for that model.
-    if selected_make and selected_model:
-        _all_engines,_all_fuels,_all_gearboxes,_all_specs=local_vehicle_choices(selected_make,selected_model,None)
-        if not engines: engines=_merge_unique(engines,_all_engines)
-        if not fuels: fuels=_merge_unique(fuels,_all_fuels)
-        if not gearboxes: gearboxes=_merge_unique(gearboxes,_all_gearboxes)
-        if not derivatives: derivatives=_merge_unique(derivatives,_all_specs)
-        _dg_cov=dg_catalogue_coverage(selected_make,selected_model)
+    verified_rule_fuels=[]
+    _yrule=dg_year_rule(selected_make,selected_model,selected_year)
+    if _yrule: verified_rule_fuels=[_yrule.get("fuel","")]
+    if official_fuels:
+        fuels=_merge_unique(official_fuels)
+    elif taxonomy:
+        _,_,_,_taxfuels,_=taxonomy_options(taxonomy)
+        fuels=_merge_unique(_taxfuels,verified_rule_fuels)
     else:
-        _dg_cov={"thin":False}
-    # Never block appraisal because taxonomy is incomplete. These are user choices,
-    # not claims that every powertrain existed for the selected model/year.
-    if selected_make and selected_model and not fuels:
-        fuels=["Petrol","Diesel","Hybrid","Plug-in Hybrid","Electric"]
-    if selected_make and selected_model and not gearboxes:
-        gearboxes=["Manual","Automatic"]
+        # Exact-year local rows only; never all-year model fallbacks.
+        fuels=_merge_unique(verified_rule_fuels,[x for x in dg_fuels if x])
+    if official_specs:
+        derivatives=_merge_unique(official_specs)
+    elif taxonomy:
+        _,_taxspecs,_,_,_=taxonomy_options(taxonomy)
+        derivatives=_merge_unique(_taxspecs,dg_year_specs(selected_make,selected_model,selected_year))
+    else:
+        derivatives=_merge_unique(dg_year_specs(selected_make,selected_model,selected_year))
+    # Gearbox can be enriched later only from the already constrained taxonomy/verified row.
+    gearboxes=_merge_unique(official_gearboxes)
+    _dg_cov={"thin":False}
 
     taxonomy_verified=bool(taxonomy)
     official_catalogue_loaded=not official_catalogue.empty
@@ -3158,7 +3162,9 @@ with tabs[0]:
 
     # Fuel first: this immediately removes petrol/diesel/hybrid/EV derivatives and engines
     # that cannot belong to the selected fuel type for the exact chosen year.
-    if taxonomy_verified:
+    if official_fuels:
+        fuel_options=_merge_unique(official_fuels)
+    elif taxonomy_verified:
         _,_,_,tax_fuels,_=taxonomy_options(taxonomy)
         fuel_options=_merge_unique(tax_fuels,fuels)
     else:
@@ -3202,12 +3208,10 @@ with tabs[0]:
     else:
         st.caption("Fuel → spec → engine → gearbox. Where the free feed has no structured spec, DG supplies clean model trim suggestions instead of dealer names; use the manual override if the exact historical trim is missing.")
 
-    if not spec_is_year_constrained:
-        with st.expander("Exact spec not listed?"):
-            manual_spec=st.text_input("Spec override",placeholder="e.g. vRS")
-            if manual_spec.strip(): selected_spec=manual_spec.strip()
+    if not spec_is_year_constrained and selected_model:
+        st.caption("DG will not invent a derivative. If it cannot verify the spec for this year, leave it unselected.")
     else:
-        st.caption("Manual spec override is disabled because year-specific official spec data is available.")
+        st.caption("Spec choices are locked to year-specific evidence.")
 
     if taxonomy_verified:
         spec_rows,_,tax_engines,_,_=taxonomy_options(taxonomy,spec=selected_spec,fuel=selected_fuel)
@@ -3252,7 +3256,8 @@ with tabs[0]:
             taxonomy,spec=selected_spec,engine=selected_engine,fuel=selected_fuel)
         gearbox_options=_merge_unique(tax_gearboxes,gearboxes)
     else:
-        gearbox_options=gearboxes
+        _exact_local=local_vehicle_choices(selected_make,selected_model,selected_year)
+        gearbox_options=_merge_unique(gearboxes,_exact_local[2])
     selected_gearbox=st.selectbox("Gearbox",["— Choose gearbox —"]+gearbox_options,
         disabled=not bool(selected_model))
     if selected_gearbox.startswith("—"): selected_gearbox=""
@@ -3917,9 +3922,9 @@ with tabs[0]:
         except Exception as _dg_research_error:
             _dg_research={"status":"research_unavailable","issues":[],"error":type(_dg_research_error).__name__}
         _dg_web_intel=_dg_research.get("issues",[]) if isinstance(_dg_research,dict) else []
+        # Structured bank/local rules are already schema-controlled; the harsh prose
+        # filter is only for scraped/live text. This restores useful risks on other cars.
         _dg_web_intel=dg_clean_issue_rows(_dg_web_intel)
-        _dg_bank_intel=dg_clean_issue_rows(_dg_bank_intel)
-        _dg_local_intel=dg_clean_issue_rows(_dg_local_intel)
         _dg_live_intel=_dg_bank_intel+_dg_local_intel+_dg_web_intel
         _seen_now=set()
         _dg_live_intel=[x for x in _dg_live_intel if not ((_dg_norm(x.get("issue","")) in _seen_now) or _seen_now.add(_dg_norm(x.get("issue",""))))]
@@ -3945,7 +3950,6 @@ with tabs[0]:
         _dg_intel+=_dg_live_intel
         _seen_issue=set()
         _dg_intel=[x for x in _dg_intel if not (_dg_norm(x.get("issue","")) in _seen_issue or _seen_issue.add(_dg_norm(x.get("issue",""))))]
-        _dg_intel=dg_clean_issue_rows(_dg_intel)
         # Seed/refresh the learning bank from evidence that has passed DG's matching rules.
         _learn=[]
         for _i in _dg_intel:
@@ -3975,7 +3979,7 @@ with tabs[0]:
         else: st.info("No verified exact match. DG is still showing broader model/fuel evidence where available.")
         if _dg_intel:
             _sev_order={"High":0,"Medium":1,"Low":2}
-            _dg_intel=dg_clean_issue_rows(_dg_intel)
+            _dg_intel=[x for x in _dg_intel if dg_display_issue_ok(x)]
             _dg_intel=sorted(_dg_intel,key=lambda x:_sev_order.get(str(x.get("severity","Medium")).title(),1))
             for _i in _dg_intel:
                 import html as _html
