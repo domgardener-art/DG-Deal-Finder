@@ -3212,22 +3212,6 @@ def dg_cascade_options(make,model,year,fuel=""):
     return out
 
 
-def dg_vehicle_trust(make,model,year,fuel="",spec="",engine="",gearbox=""):
-    bank=dg_vehicle_bank()
-    if bank.empty:return {"level":"Fallback/manual","scope":"No bundled evidence","source":""}
-    def n(v):return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
-    hit=bank[(bank["make"].map(n)==n(make))&(bank["model"].map(n)==n(model))]
-    if year: hit=hit[hit["year"].astype(str).str.strip()==str(year)]
-    for col,val in [("fuel",fuel),("spec",spec),("engine",engine),("gearbox",gearbox)]:
-        if val and not hit.empty:
-            exact=hit[hit[col].map(n)==n(val)]
-            if not exact.empty:hit=exact
-    if hit.empty:return {"level":"Fallback/manual","scope":"Combination not evidenced","source":""}
-    r=hit.iloc[0]
-    return {"level":str(r.get("evidence_level","Model-level evidence")),
-            "scope":str(r.get("evidence_scope","Bundled reference")),
-            "source":str(r.get("source",""))}
-
 def dg_continuity_fuels(make,model,year):
     """Last resort only: unknown is safer than inventing fuel choices."""
     y=int(year); m=str(model).lower()
@@ -3476,14 +3460,32 @@ with tabs[0]:
         key=f"gearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}",
         disabled=not bool(selected_model))
     if selected_gearbox.startswith("—") or selected_gearbox=="Not confirmed": selected_gearbox=""
+    # Trust layer: show the strength of the selected vehicle identity.
+    _trust_bank=dg_vehicle_bank()
+    _trust_level="Manual / verify"
+    _trust_note="Confirm the exact derivative from the advert, V5C or manufacturer data before buying."
+    try:
+        def _tn(v): return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
+        _tr=_trust_bank[(_trust_bank["make"].map(_tn)==_tn(selected_make))&
+                        (_trust_bank["model"].map(_tn)==_tn(selected_model))&
+                        (_trust_bank["year"].astype(str).str.strip()==str(selected_year))]
+        if selected_fuel: _tr=_tr[_tr["fuel"].map(_tn).isin([_tn(selected_fuel),"","notconfirmed"])]
+        if selected_spec: _tr=_tr[_tr["spec"].map(_tn)==_tn(selected_spec)]
+        if selected_engine: _tr=_tr[_tr["engine"].map(_tn)==_tn(selected_engine)]
+        if selected_gearbox: _tr=_tr[_tr["gearbox"].map(_tn)==_tn(selected_gearbox)]
+        if not _tr.empty:
+            _trust_level=str(_tr.iloc[0].get("evidence_level") or "Reference evidence")
+            _trust_note=str(_tr.iloc[0].get("verification_note") or _trust_note)
+    except Exception:
+        pass
+    if selected_model and selected_fuel:
+        _trust_icon="✓" if _trust_level in ("Official/registered evidence","Historical evidence") else "i"
+        st.markdown(f"""<div style="margin:.35rem 0 1rem;padding:.7rem .85rem;border:1px solid #D0D5DD;border-radius:10px;background:#fff">
+        <div style="font-weight:750;color:#101828;font-size:.88rem">Vehicle match {_trust_icon} · {_trust_level}</div>
+        <div style="color:#667085;font-size:.78rem;margin-top:.15rem">{_trust_note}</div></div>""",unsafe_allow_html=True)
+
     if _gearbox_manual_needed:
         selected_gearbox=st.selectbox("Gearbox",["","Manual","Automatic","DSG","CVT","Other"],key=f"manualgearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}")
-
-    if selected_make and selected_model and selected_fuel:
-        _trust=dg_vehicle_trust(selected_make,selected_model,selected_year,selected_fuel,selected_spec,selected_engine,selected_gearbox)
-        _tl=_trust.get("level","Fallback/manual")
-        _icon="✓" if _tl=="Verified" else ("●" if _tl=="Strong evidence" else "○")
-        st.markdown(f"""<div style="margin:10px 0 16px;padding:12px 14px;border:1px solid #E4E7EC;border-radius:10px;background:#fff"><div style="font-size:12px;color:#667085;font-weight:700;text-transform:uppercase">Vehicle match confidence</div><div style="font-size:15px;color:#101828;font-weight:800;margin-top:3px">{_icon} {_tl}</div><div style="font-size:12px;color:#667085;margin-top:3px">{_trust.get('scope','')}{' · '+_trust.get('source','') if _trust.get('source') else ''}</div></div>""",unsafe_allow_html=True)
 
     historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
     if selected_engine and historical_engines:
