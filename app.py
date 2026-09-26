@@ -497,15 +497,17 @@ def dg_structured_issue_matches(make,model,year,engine,fuel,gearbox,mileage=0):
         rm=r.get("model","")
         if rm not in ("","*") and key(rm) not in md and md not in key(rm): continue
         rf=key(r.get("fuel"))
-        if rf and rf!=fu: continue
+        if rf and fu and fu!="notconfirmed" and rf!=fu: continue
         try:
             y=int(year or 0); y0=int(float(r.get("year_from") or 0)); y1=int(float(r.get("year_to") or 9999))
             if y and not (y0<=y<=y1): continue
         except Exception: pass
         terms=[key(x) for x in str(r.get("engine_terms","")).split("|") if x.strip()]
-        if terms and hay and not any(t in hay for t in terms): continue
+        _engine_known=bool(hay and hay!="notconfirmed")
+        if terms and _engine_known and not any(t in hay for t in terms): continue
         gterms=[key(x) for x in str(r.get("gearbox_terms","")).split("|") if x.strip()]
-        if gterms and gb and not any(t in gb for t in gterms): continue
+        _gearbox_known=bool(gb and gb!="notconfirmed")
+        if gterms and _gearbox_known and not any(t in gb for t in gterms): continue
         q=dict(r)
         for k in ("cost_low","cost_high","mileage_from","mileage_to"):
             try:q[k]=float(q.get(k) or 0)
@@ -583,8 +585,13 @@ def dg_clean_issue_rows(rows):
         if not duplicate:final.append(r)
     return final
 def dg_display_issue_ok(row):
-    issue=str(row.get("issue","")).strip().lower()
+    raw=str((row or {}).get("issue","")).strip()
+    issue=raw.lower()
     if not issue:return False
+    et=str((row or {}).get("evidence_type","")).lower()
+    conf=str((row or {}).get("confidence","")).lower()
+    if "not a model-specific" in et or "recall verification" in et or conf in ("general","official check"):
+        return len(raw)>=12
     bad=("no year is","what matters is","car in front of you","reliability score",
          "count of the faults","popular cars get written","years and engines with",
          "newer generation has had less time","where this data comes from")
@@ -799,7 +806,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V115 Startup NameError Fix")
+st.caption("DG Deal Finder • V116 Specs & Issues Working")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3258,6 +3265,7 @@ with tabs[0]:
     )
     verified_dg_specs=dg_year_specs(selected_make,selected_model,selected_year,selected_fuel)
     year_spec_evidence=_merge_unique(official_year_specs,verified_dg_specs)
+    candidate_specs=_merge_unique(candidate_specs,verified_dg_specs)
     spec_options=filter_specs_to_official_year(candidate_specs,year_spec_evidence)
     spec_is_year_constrained=bool(year_spec_evidence)
     if official_catalogue_loaded and not year_spec_evidence:
