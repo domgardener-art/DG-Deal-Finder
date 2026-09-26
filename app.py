@@ -818,7 +818,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V126 Trusted Vehicle Bank")
+st.caption("DG Deal Finder • V126 Year-Trusted Selector")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3169,7 +3169,10 @@ DG_VERIFIED_MODEL_LIFECYCLES={
 "Toyota":{"Aygo":(2005,2022),"Yaris":(1999,2026),"Auris":(2007,2019),"Corolla":(1966,2026),"RAV4":(1994,2026),"C-HR":(2017,2026),"Prius":(2000,2022)},
 "Peugeot":{"208":(2012,2026),"2008":(2013,2026),"308":(2007,2026),"3008":(2009,2026),"5008":(2010,2026),"508":(2011,2026)},
 "Jaguar":{"XE":(2015,2024),"XF":(2008,2024),"F-Pace":(2016,2026),"E-Pace":(2018,2026)},
-"Land Rover":{"Range Rover Evoque":(2011,2026),"Discovery Sport":(2015,2026),"Discovery":(1989,2026),"Range Rover Sport":(2005,2026)}
+"Land Rover":{"Range Rover Evoque":(2011,2026),"Discovery Sport":(2015,2026),"Discovery":(1989,2026),"Range Rover Sport":(2005,2026)},
+"Renault":{"Clio":(1991,2026),"Captur":(2013,2026),"Megane":(1996,2026),"Kadjar":(2015,2022),
+"Arkana":(2021,2025),"Austral":(2022,2026),"Zoe":(2013,2024),"Koleos":(2017,2020),
+"Scenic":(1997,2020),"Twingo":(1993,2019)}
 }
 def dg_verified_year_models(make,year):
     y=int(year)
@@ -3211,25 +3214,6 @@ def dg_cascade_options(make,model,year,fuel=""):
         out[key]=good(exact,col) or good(rows,col) or base[key]
     return out
 
-
-def dg_vehicle_match_confidence(make,model,year,fuel="",spec="",engine="",gearbox=""):
-    try:
-        df=dg_vehicle_bank()
-        def n(v):return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
-        hit=df[(df["make"].map(n)==n(make))&(df["model"].map(n)==n(model))&(df["year"].astype(str).str.strip()==str(year))]
-        if fuel: hit=hit[hit["fuel"].map(n).isin([n(fuel),"","notconfirmed"])]
-        for col,val in [("spec",spec),("engine",engine),("gearbox",gearbox)]:
-            if val:
-                exact=hit[hit[col].map(n)==n(val)]
-                if not exact.empty: hit=exact
-        if hit.empty:return ("Manual / unresolved","Confirm against advert, V5C or VIN before purchase.")
-        levels=set(str(x) for x in hit.get("evidence_level",[]) if str(x).strip())
-        if "Verified source" in levels:return ("Verified source","Supported by an official/public source record.")
-        if "Historical evidence" in levels:return ("Historical evidence","Historical range evidence found; confirm the exact car from advert/V5C.")
-        if "DG reference" in levels:return ("DG reference","Known reference combination; confirm exact derivative before purchase.")
-        return ("Model-level only","Model/year is known, but exact derivative is not independently verified.")
-    except Exception:
-        return ("Unresolved","Confirm the exact vehicle before purchase.")
 
 def dg_continuity_fuels(make,model,year):
     """Last resort only: unknown is safer than inventing fuel choices."""
@@ -3274,16 +3258,29 @@ with tabs[0]:
             models=[]
     _model_year_verified=bool(models)
     if selected_make and not models:
+        # V126 TRUST RULE: never show a timeless make/model list for a selected year.
+        # Only exact-year bank evidence is allowed. If none exists, use manual model entry.
         _bank=dg_vehicle_bank()
         if not _bank.empty:
-            _bm=_bank[_bank["make"].astype(str).str.lower().eq(str(selected_make).lower())]
-            models=sorted({str(x).strip() for x in _bm["model"].dropna() if str(x).strip()})
+            _bm=_bank[
+                _bank["make"].astype(str).str.lower().eq(str(selected_make).lower())
+                & _bank["year"].astype(str).str.strip().eq(str(selected_year))
+            ]
+            models=sorted({str(x).strip() for x in _bm["model"].dropna()
+                           if str(x).strip() and str(x).strip().lower() not in ("not confirmed","unknown")})
         if models:
-            st.caption("Exact model/year coverage is incomplete in the offline bank. DG is showing known model families so the appraisal can continue; exact year/spec remains unconfirmed.")
-    selected_model=st.selectbox("Model",["— Choose model —"]+models,
-        disabled=not bool(selected_make) or not bool(models),
-        help="Year-verified models are preferred. Where the offline bank is incomplete, DG shows known model families without pretending the exact year is verified.")
-    if selected_model=="— Choose model —": selected_model=""
+            st.caption("Model choices are limited to DG records for this exact year.")
+    if models:
+        selected_model=st.selectbox("Model",["— Choose model —"]+models,
+            disabled=not bool(selected_make),
+            help="Only year-supported model choices are shown.")
+        if selected_model=="— Choose model —": selected_model=""
+    else:
+        selected_model=st.text_input("Model",value="",
+            placeholder="Type model from advert / V5C",
+            help="DG has no trustworthy exact-year model list for this make/year, so it will not invent one.").strip()
+        if selected_make:
+            st.caption("No verified exact-year model list is available here. Enter the model manually; DG will still run valuation and issue checks.")
     lookup_model=lookup_model_name(selected_make,selected_model)
 
     # Spec-first selector backed by a separate vehicle taxonomy.
@@ -3481,11 +3478,6 @@ with tabs[0]:
     if selected_gearbox.startswith("—") or selected_gearbox=="Not confirmed": selected_gearbox=""
     if _gearbox_manual_needed:
         selected_gearbox=st.selectbox("Gearbox",["","Manual","Automatic","DSG","CVT","Other"],key=f"manualgearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}")
-
-    if selected_make and selected_model and selected_year:
-        _match_level,_match_note=dg_vehicle_match_confidence(selected_make,selected_model,selected_year,selected_fuel,selected_spec,selected_engine,selected_gearbox)
-        _match_icon={"Verified source":"✓","Historical evidence":"◐","DG reference":"◐","Model-level only":"○","Manual / unresolved":"○","Unresolved":"○"}.get(_match_level,"○")
-        st.caption(f"{_match_icon} Vehicle match: {_match_level} — {_match_note}")
 
     historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
     if selected_engine and historical_engines:
