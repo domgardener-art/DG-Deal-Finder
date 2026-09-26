@@ -7052,3 +7052,8 @@ Land Rover,Range Rover Sport,2026,Not confirmed,Not confirmed,Diesel,Not confirm
 Land Rover,Range Rover Sport,2026,Not confirmed,Not confirmed,Hybrid,Not confirmed,DG offline lifecycle coverage,Continuity — verify exact derivative
 Land Rover,Range Rover Sport,2026,Not confirmed,Not confirmed,Plug-in Hybrid,Not confirmed,DG offline lifecycle coverage,Continuity — verify exact derivative
 Land Rover,Range Rover Sport,2026,Not confirmed,Not confirmed,Electric,Not confirmed,DG offline lifecycle coverage,Continuity — verify exact derivative
+Audi,A1,2013,SE,1.2 TFSI,Petrol,Manual,DG historical reference seed,Historical - verify exact derivative
+Audi,A1,2013,Sport,1.2 TFSI,Petrol,Manual,DG historical reference seed,Historical - verify exact derivative
+Audi,A1,2013,S line,1.4 TFSI,Petrol,Manual,DG historical reference seed,Historical - verify exact derivative
+Audi,A1,2013,S line,1.4 TFSI,Petrol,Automatic,DG historical reference seed,Historical - verify exact derivative
+Audi,A1,2013,Amplified Edition,2.0 TDI,Diesel,Manual,Parkers historical derivative reference,Historical - verify exact derivative
