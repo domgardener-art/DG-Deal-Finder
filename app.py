@@ -808,7 +808,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V119 Runtime-Checked Spec Fix")
+st.caption("DG Deal Finder • V120 Local Cascade Repair")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3169,6 +3169,24 @@ def dg_verified_model_fuels(make,model,year):
     y=int(year)
     return [f for f,a,b in DG_MODEL_FUEL_ERAS.get(str(make),{}).get(str(model),[]) if a<=y<=b]
 
+def dg_bank_options(make,model,year):
+    bank=dg_vehicle_bank()
+    if bank.empty:return {"fuels":[],"specs":[],"engines":[],"gearboxes":[]}
+    def n(v):return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
+    rows=bank[(bank["make"].map(n)==n(make))&(bank["model"].map(n)==n(model))].copy()
+    if rows.empty:return {"fuels":[],"specs":[],"engines":[],"gearboxes":[]}
+    exact=rows[rows["year"].astype(str).str.strip()==str(year)]
+    useful=exact if not exact.empty else rows
+    def vals(col,df):
+        return _merge_unique([str(x).strip() for x in df[col].tolist()
+            if str(x).strip() and str(x).strip().lower() not in ("not confirmed","unknown","nan")])
+    out={}
+    for col,key in [("fuel","fuels"),("spec","specs"),("engine","engines"),("gearbox","gearboxes")]:
+        v=vals(col,useful)
+        if not v:v=vals(col,rows)
+        out[key]=v
+    return out
+
 def dg_continuity_fuels(make,model,year):
     """Last resort only: unknown is safer than inventing fuel choices."""
     y=int(year); m=str(model).lower()
@@ -3295,9 +3313,11 @@ with tabs[0]:
         fuel_options=fuels
     fuel_index=1 if len(fuel_options)==1 else 0
     if selected_make and selected_model and _dg_cov.get("thin"):
-        st.caption("DG has partial catalogue detail for this model. Appraisal remains available; exact spec/engine can be entered manually.")
+        st.caption("DG has partial catalogue detail for this model. Appraisal remains available; DG will use broader known model data where exact-year detail is thin.")
     if not fuel_options:
         fuel_options=_merge_unique(dg_verified_model_fuels(selected_make,selected_model,selected_year))
+    _dg_local_opts=dg_bank_options(selected_make,selected_model,selected_year) if selected_model else {"fuels":[],"specs":[],"engines":[],"gearboxes":[]}
+    fuel_options=_merge_unique(fuel_options,_dg_local_opts.get("fuels",[]))
     if not fuel_options and selected_model:
         fuel_options=dg_continuity_fuels(selected_make,selected_model,selected_year)
     selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,index=fuel_index,disabled=not bool(selected_model))
@@ -3318,7 +3338,7 @@ with tabs[0]:
     )
     verified_dg_specs=dg_year_specs(selected_make,selected_model,selected_year,selected_fuel)
     year_spec_evidence=_merge_unique(official_year_specs,verified_dg_specs)
-    candidate_specs=_merge_unique(candidate_specs,verified_dg_specs)
+    candidate_specs=_merge_unique(candidate_specs,verified_dg_specs,_dg_local_opts.get("specs",[]))
     spec_options=filter_specs_to_official_year(candidate_specs,year_spec_evidence)
     spec_is_year_constrained=bool(year_spec_evidence)
     if official_catalogue_loaded and not year_spec_evidence:
@@ -3336,7 +3356,7 @@ with tabs[0]:
     if taxonomy_verified:
         st.caption("Fuel → year-valid spec → spec-valid engine → gearbox. Official UK year data constrains choices where available; fallback data is used only where official detail is unavailable.")
     else:
-        st.caption("Fuel → spec → engine → gearbox. Where the free feed has no structured spec, DG supplies clean model trim suggestions instead of dealer names; use the manual override if the exact historical trim is missing.")
+        st.caption("Fuel → spec → engine → gearbox. Where the free feed has no structured spec, DG supplies clean model trim suggestions instead of dealer names; confirm the exact historical trim from the advert/V5C if needed.")
 
     if not spec_is_year_constrained and selected_model:
         st.caption("DG shows exact-year specs first. Where exact-year coverage is thin, it offers known model/fuel trims as suggestions — confirm the exact derivative from the advert/V5C.")
@@ -3367,6 +3387,7 @@ with tabs[0]:
     # them with broad model-level fallback labels.
     if verified_dg_engines:
         engine_options=_merge_unique(verified_dg_engines)
+        engine_options=_merge_unique(engine_options,_dg_local_opts.get("engines",[]))
     engine_is_year_constrained=bool(year_engine_evidence)
     if not year_engine_evidence:
         # Reliability first: broad model-level engines are not year evidence.
@@ -3385,10 +3406,10 @@ with tabs[0]:
     if taxonomy_verified:
         final_rows,_,_,_,tax_gearboxes=taxonomy_options(
             taxonomy,spec=selected_spec,engine=selected_engine,fuel=selected_fuel)
-        gearbox_options=_merge_unique(tax_gearboxes,gearboxes)
+        gearbox_options=_merge_unique(tax_gearboxes,gearboxes,_dg_local_opts.get("gearboxes",[]))
     else:
         _exact_local=local_vehicle_choices(selected_make,selected_model,selected_year)
-        gearbox_options=_merge_unique(gearboxes,_exact_local[2])
+        gearbox_options=_merge_unique(gearboxes,_exact_local[2],_dg_local_opts.get("gearboxes",[]))
     gearbox_options=dg_not_confirmed(gearbox_options) if selected_model and selected_fuel else gearbox_options
     selected_gearbox=st.selectbox("Gearbox",["— Choose gearbox —"]+gearbox_options,
         disabled=not bool(selected_model))
