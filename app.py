@@ -818,7 +818,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V126 10-Pass Evidence Enrichment")
+st.caption("DG Deal Finder • V126 Trusted Vehicle Bank")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3212,6 +3212,22 @@ def dg_cascade_options(make,model,year,fuel=""):
     return out
 
 
+def dg_vehicle_trust(make,model,year,fuel="",spec="",engine="",gearbox=""):
+    bank=dg_vehicle_bank()
+    if bank.empty:return {"level":"Fallback/manual","scope":"No bundled evidence","source":""}
+    def n(v):return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
+    hit=bank[(bank["make"].map(n)==n(make))&(bank["model"].map(n)==n(model))]
+    if year: hit=hit[hit["year"].astype(str).str.strip()==str(year)]
+    for col,val in [("fuel",fuel),("spec",spec),("engine",engine),("gearbox",gearbox)]:
+        if val and not hit.empty:
+            exact=hit[hit[col].map(n)==n(val)]
+            if not exact.empty:hit=exact
+    if hit.empty:return {"level":"Fallback/manual","scope":"Combination not evidenced","source":""}
+    r=hit.iloc[0]
+    return {"level":str(r.get("evidence_level","Model-level evidence")),
+            "scope":str(r.get("evidence_scope","Bundled reference")),
+            "source":str(r.get("source",""))}
+
 def dg_continuity_fuels(make,model,year):
     """Last resort only: unknown is safer than inventing fuel choices."""
     y=int(year); m=str(model).lower()
@@ -3462,6 +3478,12 @@ with tabs[0]:
     if selected_gearbox.startswith("—") or selected_gearbox=="Not confirmed": selected_gearbox=""
     if _gearbox_manual_needed:
         selected_gearbox=st.selectbox("Gearbox",["","Manual","Automatic","DSG","CVT","Other"],key=f"manualgearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}")
+
+    if selected_make and selected_model and selected_fuel:
+        _trust=dg_vehicle_trust(selected_make,selected_model,selected_year,selected_fuel,selected_spec,selected_engine,selected_gearbox)
+        _tl=_trust.get("level","Fallback/manual")
+        _icon="✓" if _tl=="Verified" else ("●" if _tl=="Strong evidence" else "○")
+        st.markdown(f"""<div style="margin:10px 0 16px;padding:12px 14px;border:1px solid #E4E7EC;border-radius:10px;background:#fff"><div style="font-size:12px;color:#667085;font-weight:700;text-transform:uppercase">Vehicle match confidence</div><div style="font-size:15px;color:#101828;font-weight:800;margin-top:3px">{_icon} {_tl}</div><div style="font-size:12px;color:#667085;margin-top:3px">{_trust.get('scope','')}{' · '+_trust.get('source','') if _trust.get('source') else ''}</div></div>""",unsafe_allow_html=True)
 
     historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
     if selected_engine and historical_engines:
