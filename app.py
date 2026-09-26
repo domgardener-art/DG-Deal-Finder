@@ -818,7 +818,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V126 Populated Vehicle Bank")
+st.caption("DG Deal Finder • V126 Trusted Vehicle Bank")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3212,6 +3212,42 @@ def dg_cascade_options(make,model,year,fuel=""):
     return out
 
 
+
+def dg_vehicle_match_trust(make,model,year,fuel="",spec="",engine="",gearbox=""):
+    try:
+        bank=dg_vehicle_bank()
+        if bank.empty:return {"level":"Manual / unverified","detail":"No bundled evidence for this selection.","source":""}
+        def n(v):return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
+        rows=bank[(bank["make"].map(n)==n(make))&(bank["model"].map(n)==n(model))]
+        exact=rows[rows["year"].astype(str).str.strip()==str(year)]
+        if not exact.empty: rows=exact
+        for col,val in [("fuel",fuel),("spec",spec),("engine",engine),("gearbox",gearbox)]:
+            if val:
+                hit=rows[rows[col].map(n)==n(val)]
+                if not hit.empty: rows=hit
+        if rows.empty:return {"level":"Manual / unverified","detail":"Exact combination is not in DG's bundled evidence bank. Confirm from advert/V5C.","source":""}
+        order={"High":3,"Medium":2,"Low":1}
+        best=max(rows.to_dict("records"),key=lambda r:order.get(str(r.get("trust_level","")),0))
+        return {"level":best.get("trust_status","DG structured bank"),"detail":best.get("verification_note","Confirm exact derivative."),"source":best.get("source","")}
+    except Exception:
+        return {"level":"Evidence unavailable","detail":"DG could not read the local evidence record.","source":""}
+
+def dg_combo_audit(make,model,year,fuel="",spec="",engine="",gearbox=""):
+    try:
+        bank=dg_vehicle_bank()
+        if bank.empty:return {"status":"unknown","reason":"No local evidence bank."}
+        def n(v):return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
+        rows=bank[(bank["make"].map(n)==n(make))&(bank["model"].map(n)==n(model))]
+        exact=rows[rows["year"].astype(str).str.strip()==str(year)]
+        if not exact.empty: rows=exact
+        for col,val in [("fuel",fuel),("spec",spec),("engine",engine),("gearbox",gearbox)]:
+            if not val:continue
+            hit=rows[rows[col].map(n)==n(val)]
+            if hit.empty:return {"status":"verify","reason":f"{col.title()} is not evidenced for this exact model/year path."}
+            rows=hit
+        return {"status":"supported","reason":"Selected combination is represented in DG's bundled evidence bank."}
+    except Exception:return {"status":"unknown","reason":"Combination audit unavailable."}
+
 def dg_continuity_fuels(make,model,year):
     """Last resort only: unknown is safer than inventing fuel choices."""
     y=int(year); m=str(model).lower()
@@ -3460,6 +3496,17 @@ with tabs[0]:
         key=f"gearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}",
         disabled=not bool(selected_model))
     if selected_gearbox.startswith("—") or selected_gearbox=="Not confirmed": selected_gearbox=""
+    _dg_trust=dg_vehicle_match_trust(selected_make,selected_model,selected_year,selected_fuel,selected_spec,selected_engine,selected_gearbox)
+    _dg_combo=dg_combo_audit(selected_make,selected_model,selected_year,selected_fuel,selected_spec,selected_engine,selected_gearbox)
+    if selected_model:
+        _tl=_dg_trust.get("level","Evidence unavailable")
+        _ti="✓" if _tl=="Verified registration evidence" else ("◐" if _tl in ("Historical reference","DG structured bank") else "!")
+        st.markdown(f"""<div style="margin:.45rem 0 .2rem;padding:.7rem .85rem;border:1px solid #E4E7EC;border-radius:10px;background:#fff">
+        <div style="font-weight:750;color:#101828;font-size:.88rem">Vehicle match: {_ti} {_tl}</div>
+        <div style="color:#667085;font-size:.78rem;margin-top:.15rem">{_dg_trust.get("detail","")}</div></div>""",unsafe_allow_html=True)
+        if _dg_combo.get("status")=="verify":
+            st.caption("Combination check: confirm from advert/V5C — "+_dg_combo.get("reason",""))
+
     if _gearbox_manual_needed:
         selected_gearbox=st.selectbox("Gearbox",["","Manual","Automatic","DSG","CVT","Other"],key=f"manualgearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}")
 
@@ -4336,6 +4383,16 @@ with tabs[1]:
     st.markdown('</div>',unsafe_allow_html=True)
 
 with tabs[3]:
+    st.markdown("### Vehicle data trust")
+    st.caption("DG separates evidence strength instead of presenting every dropdown option as equally certain.")
+    st.markdown("""
+**Verified registration evidence** — official/DfT-DVLA-backed evidence where present.  
+**Historical reference** — sourced historical derivative evidence; confirm the exact vehicle.  
+**DG structured bank** — structured local evidence with medium confidence.  
+**Model continuity only** — model/year existence only; exact spec/powertrain not claimed.  
+**Manual / unverified** — unsupported exact combination; verify before buying.
+""")
+
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">Buying discipline</div><div class="hero">Your rules</div><div class="sub">Set the economics every stock opportunity has to clear.</div></div>',unsafe_allow_html=True)
     st.session_state.min_profit=st.number_input("Minimum contribution (£)",0,10000,int(st.session_state.min_profit),50)
     st.session_state.min_roi=st.number_input("Minimum ROI (%)",0,200,int(st.session_state.min_roi),1)
