@@ -786,7 +786,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V108 Offline Catalogue Fix")
+st.caption("DG Deal Finder • V110 Complete Cascade Fix")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3090,6 +3090,20 @@ DG_VERIFIED_MODEL_LIFECYCLES={
 def dg_verified_year_models(make,year):
     y=int(year)
     return sorted([m for m,(a,b) in DG_VERIFIED_MODEL_LIFECYCLES.get(str(make),{}).items() if a<=y<=b])
+DG_MODEL_FUEL_ERAS={"BMW":{"1 Series":[("Petrol",2004,2026),("Diesel",2004,2024)],"2 Series":[("Petrol",2014,2026),("Diesel",2014,2026)],"3 Series":[("Petrol",1975,2026),("Diesel",1985,2026),("Plug-in Hybrid",2016,2026)],"4 Series":[("Petrol",2013,2026),("Diesel",2013,2026)],"5 Series":[("Petrol",1972,2026),("Diesel",1983,2026),("Plug-in Hybrid",2017,2026)],"7 Series":[("Petrol",1977,2026),("Diesel",1996,2022),("Plug-in Hybrid",2016,2022)],"X1":[("Petrol",2009,2026),("Diesel",2009,2026)],"X3":[("Petrol",2004,2026),("Diesel",2004,2026)],"X5":[("Petrol",2000,2026),("Diesel",2003,2026),("Plug-in Hybrid",2015,2026)]}}
+def dg_verified_model_fuels(make,model,year):
+    y=int(year)
+    return [f for f,a,b in DG_MODEL_FUEL_ERAS.get(str(make),{}).get(str(model),[]) if a<=y<=b]
+
+def dg_continuity_fuels(make,model,year):
+    y=int(year); m=str(model).lower()
+    if y>=2020 and any(x in m for x in ("taycan","zoe","leaf","i3")): return ["Electric"]
+    if y<=2019: return ["Petrol","Diesel"]
+    return ["Petrol","Diesel","Hybrid","Plug-in Hybrid","Electric"]
+def dg_not_confirmed(options):
+    vals=[str(x).strip() for x in (options or []) if str(x).strip() and not str(x).startswith("—")]
+    return vals if vals else ["Not confirmed"]
+
 with tabs[0]:
     st.markdown('<div class="dg-wrap"><div class="dg-hero"><div class="eyebrow">DG buying desk</div><div class="hero">Appraise a vehicle</div><div class="sub">Vehicle, market, condition and deal risk — one buying decision.</div></div>',unsafe_allow_html=True)
     st.markdown('<div class="section">Choose vehicle</div>',unsafe_allow_html=True)
@@ -3193,6 +3207,10 @@ with tabs[0]:
     fuel_index=1 if len(fuel_options)==1 else 0
     if selected_make and selected_model and _dg_cov.get("thin"):
         st.caption("DG has partial catalogue detail for this model. Appraisal remains available; exact spec/engine can be entered manually.")
+    if not fuel_options:
+        fuel_options=_merge_unique(dg_verified_model_fuels(selected_make,selected_model,selected_year))
+    if not fuel_options and selected_model:
+        fuel_options=dg_continuity_fuels(selected_make,selected_model,selected_year)
     selected_fuel=st.selectbox("Fuel",["— Choose fuel —"]+fuel_options,index=fuel_index,disabled=not bool(selected_model))
     if selected_fuel.startswith("—"): selected_fuel=""
 
@@ -3220,6 +3238,7 @@ with tabs[0]:
     if spec_is_year_constrained:
         st.caption(f"Spec list filtered to {selected_year} UK registrations — {len(spec_options)} valid choice(s).")
 
+    spec_options=dg_not_confirmed(spec_options) if selected_model and selected_fuel else spec_options
     selected_spec=st.selectbox("Spec / derivative",["— Choose spec —"]+spec_options,
         disabled=not bool(selected_model),
         help="DG combines structured taxonomy when available, clean live-advert trim fields and built-in UK model trim suggestions. Suggestions are not presented as authoritative historical derivative data.")
@@ -3268,9 +3287,10 @@ with tabs[0]:
     elif selected_model:
         st.caption("Year-specific official engine evidence is limited. Catalogue choices remain available; verify unusual or imported vehicles manually.")
 
+    engine_options=dg_not_confirmed(engine_options) if selected_model and selected_fuel else engine_options
     selected_engine=st.selectbox("Engine / powertrain",["— Choose engine —"]+engine_options,
         disabled=not bool(selected_model))
-    if selected_engine.startswith("—"): selected_engine=""
+    if selected_engine.startswith("—") or selected_engine=="Not confirmed": selected_engine=""
 
     if taxonomy_verified:
         final_rows,_,_,_,tax_gearboxes=taxonomy_options(
@@ -3279,9 +3299,10 @@ with tabs[0]:
     else:
         _exact_local=local_vehicle_choices(selected_make,selected_model,selected_year)
         gearbox_options=_merge_unique(gearboxes,_exact_local[2])
+    gearbox_options=dg_not_confirmed(gearbox_options) if selected_model and selected_fuel else gearbox_options
     selected_gearbox=st.selectbox("Gearbox",["— Choose gearbox —"]+gearbox_options,
         disabled=not bool(selected_model))
-    if selected_gearbox.startswith("—"): selected_gearbox=""
+    if selected_gearbox.startswith("—") or selected_gearbox=="Not confirmed": selected_gearbox=""
 
     historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
     if selected_engine and historical_engines:
