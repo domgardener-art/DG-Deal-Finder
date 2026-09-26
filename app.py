@@ -610,6 +610,42 @@ def dg_display_issue_ok(row):
     return not any(x in issue for x in bad)
 
 @st.cache_data(ttl=86400,show_spinner=False)
+def dg_manual_spec_research(make,model,year,fuel,spec,engine=""):
+    """Analyse-only public-web check for a manually typed derivative. No API key required."""
+    import urllib.request as _ur
+    from urllib.parse import quote_plus as _q
+    import re as _re, html as _html
+    spec=str(spec or "").strip()
+    if not spec:
+        return {"status":"not_requested","matched":False,"evidence":[]}
+    vehicle=" ".join(str(x).strip() for x in [year,make,model,fuel,spec,engine] if str(x or "").strip())
+    queries=[
+        f'"{year}" "{make}" "{model}" "{spec}" {fuel} specifications',
+        f'"{make}" "{model}" "{spec}" "{engine}" {year}' if engine else f'"{make}" "{model}" "{spec}" {year}',
+    ]
+    evidence=[]; transport=False
+    for q in queries:
+        try:
+            req=_ur.Request("https://html.duckduckgo.com/html/?q="+_q(q),
+                headers={"User-Agent":"Mozilla/5.0"})
+            with _ur.urlopen(req,timeout=4) as r:
+                body=r.read(350000).decode("utf-8","ignore")
+            transport=True
+            blocks=_re.findall(r'<a[^>]+class="result__a"[^>]*>(.*?)</a>.*?(?:class="result__snippet"[^>]*>(.*?)</(?:a|div))',body,_re.I|_re.S)
+            for title,snip in blocks[:6]:
+                clean=lambda x:_html.unescape(_re.sub(r"<[^>]+>"," ",x))
+                text=_re.sub(r"\s+"," ",clean(title)+" — "+clean(snip)).strip()
+                low=text.lower()
+                must=[str(make).lower(),str(model).lower(),spec.lower()]
+                if all(x in low for x in must):
+                    evidence.append(text[:420])
+        except Exception:
+            continue
+    evidence=list(dict.fromkeys(evidence))[:5]
+    return {"status":"matched" if evidence else ("searched_no_match" if transport else "research_unavailable"),
+            "matched":bool(evidence),"evidence":evidence,"query_vehicle":vehicle}
+
+@st.cache_data(ttl=86400,show_spinner=False)
 def dg_web_research(make,model,year,engine,fuel,gearbox):
     """Live no-key research with explicit status. Never equates blocked search with 'no issues'."""
     from urllib.parse import quote_plus as _q
@@ -818,7 +854,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V126 Trusted Vehicle Bank")
+st.caption("DG Deal Finder • V126 Manual Spec Research")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -3155,12 +3191,6 @@ div[data-testid="stTabs"] [data-baseweb="tab-highlight"]{display:none!important;
 }
 </style>
 """,unsafe_allow_html=True)
-st.markdown("""<style>
-.dg-trust{margin:10px 0 14px;padding:10px 12px;border-radius:10px;border:1px solid #E4E7EC;background:#fff;font-size:13px;color:#344054}
-.dg-trust.ok{border-left:5px solid #12B76A}.dg-trust.warn{border-left:5px solid #F79009}
-.dg-trust span{color:#667085;font-size:12px}
-</style>
-""",unsafe_allow_html=True)
 tabs=st.tabs(["APPRAISAL","SAVED APPRAISALS","MARKET","SETTINGS"])
 
 
@@ -3399,6 +3429,9 @@ with tabs[0]:
     if selected_spec.startswith("—"): selected_spec=""
     if _spec_manual_needed:
         selected_spec=st.text_input("Spec / derivative",value="",placeholder="Type the trim from the advert, e.g. SE, Sport, S line",key=f"manualspec_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}").strip()
+    _spec_was_manual=bool(_spec_manual_needed and selected_spec)
+    if not _spec_manual_needed:
+        _spec_was_manual=False
     if taxonomy_verified:
         st.caption("Fuel → year-valid spec → spec-valid engine → gearbox. Official UK year data constrains choices where available; fallback data is used only where official detail is unavailable.")
     else:
@@ -3468,31 +3501,6 @@ with tabs[0]:
     if selected_gearbox.startswith("—") or selected_gearbox=="Not confirmed": selected_gearbox=""
     if _gearbox_manual_needed:
         selected_gearbox=st.selectbox("Gearbox",["","Manual","Automatic","DSG","CVT","Other"],key=f"manualgearbox_{selected_make}_{selected_year}_{selected_model}_{selected_fuel}_{selected_spec}_{selected_engine}")
-
-    # V126: transparent confidence indicator for the selected vehicle combination.
-    _trust_label="Model-level fallback"
-    _trust_note="Confirm the exact derivative from the advert/V5C before buying."
-    try:
-        _tb=dg_vehicle_bank()
-        if not _tb.empty and selected_make and selected_model:
-            def _tn(v): return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
-            _hit=_tb[(_tb["make"].map(_tn)==_tn(selected_make))&(_tb["model"].map(_tn)==_tn(selected_model))]
-            if selected_year:_hit=_hit[_hit["year"].astype(str).str.strip()==str(selected_year)]
-            if selected_fuel:_hit=_hit[_hit["fuel"].map(_tn)==_tn(selected_fuel)]
-            if selected_spec:_hit=_hit[_hit["spec"].map(_tn)==_tn(selected_spec)]
-            if selected_engine:_hit=_hit[_hit["engine"].map(_tn)==_tn(selected_engine)]
-            if selected_gearbox:_hit=_hit[_hit["gearbox"].map(_tn)==_tn(selected_gearbox)]
-            if not _hit.empty:
-                _levels=[str(x) for x in _hit.get("trust_level",pd.Series(dtype=str)).tolist() if str(x).strip()]
-                if "Verified evidence" in _levels:_trust_label="Verified evidence"
-                elif "Strong evidence" in _levels:_trust_label="Strong historical evidence"
-                elif "Structured evidence" in _levels:_trust_label="Structured catalogue evidence"
-                _srcs=[str(x) for x in _hit.get("source",pd.Series(dtype=str)).tolist() if str(x).strip()]
-                if _srcs:_trust_note="Source: "+_srcs[0]
-    except Exception:
-        pass
-    _trust_class="ok" if _trust_label in ("Verified evidence","Strong historical evidence") else "warn"
-    st.markdown(f'<div class="dg-trust {_trust_class}"><b>Vehicle match:</b> {_trust_label}<br><span>{_trust_note}</span></div>',unsafe_allow_html=True)
 
     historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
     if selected_engine and historical_engines:
@@ -3775,6 +3783,20 @@ with tabs[0]:
             st.caption("This screens seller wording for risk and contradictions. Seller claims remain unverified; it does not replace inspection, diagnostics or provenance checks.")
         go=st.form_submit_button("ANALYSE DEAL  →",use_container_width=True)
     if go:
+        _manual_spec_check={"status":"not_requested","matched":False,"evidence":[]}
+        if _spec_was_manual and selected_spec:
+            with st.spinner("Checking the manually entered derivative against public vehicle references…"):
+                _manual_spec_check=dg_manual_spec_research(
+                    selected_make,selected_model,selected_year,selected_fuel,selected_spec,selected_engine
+                )
+            if _manual_spec_check.get("matched"):
+                st.success("Manual derivative found in public search evidence. DG will use it as a researched suggestion — confirm against the advert/V5C before buying.")
+                with st.expander("Manual derivative evidence"):
+                    for _ev in _manual_spec_check.get("evidence",[]): st.write("• "+_ev)
+            elif _manual_spec_check.get("status")=="searched_no_match":
+                st.warning("DG searched for that manually entered derivative but could not corroborate it. The appraisal can continue, but treat the exact spec as unverified.")
+            elif _manual_spec_check.get("status")=="research_unavailable":
+                st.info("Live derivative research was unavailable. DG has kept your manual spec but has not verified it.")
         # Safety gate: never produce a valuation from an engine/year combination that
         # we cannot verify. This prevents a plausible-looking value for the wrong derivative.
         historical_engines=dg_year_engines(selected_make,selected_model,selected_year,selected_fuel,selected_spec)
