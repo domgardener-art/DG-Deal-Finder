@@ -808,7 +808,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V118 Spec Recovery + Pro Navigation")
+st.caption("DG Deal Finder • V119 Runtime-Checked Spec Fix")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -1197,6 +1197,14 @@ DG_YEAR_RULES=[
   "specs":{"718 Cayman":["2.0L Turbo Flat-4"],"718 Cayman S":["2.5L Turbo Flat-4"],"718 Cayman GTS":["2.5L Turbo Flat-4"]}},
 ]
 
+@st.cache_data(show_spinner=False)
+def dg_vehicle_bank():
+    """Return the bundled offline vehicle bank. Never performs network I/O."""
+    try:
+        return pd.read_csv(Path(__file__).with_name("dg_vehicle_bank.csv"),dtype=str).fillna("")
+    except Exception:
+        return pd.DataFrame(columns=["make","model","year","spec","engine","fuel","gearbox","source","confidence"])
+
 def dg_year_rule(make,model,year,fuel=""):
     mk=str(make or "").strip().lower(); md=str(model or "").strip().lower()
     y=int(year or 0)
@@ -1207,27 +1215,21 @@ def dg_year_rule(make,model,year,fuel=""):
     return None
 
 def dg_year_specs(make,model,year,fuel=""):
-    """Offline specs: exact year first; if thin, expose curated model/fuel specs as suggestions."""
-    try:
-        import csv
-        with Path(__file__).with_name("dg_vehicle_bank.csv").open("r",encoding="utf-8-sig",newline="") as f:
-            rows=list(csv.DictReader(f))
-    except Exception:
-        return []
-    def norm(x): return re.sub(r"[^a-z0-9]+","",str(x or "").lower())
-    mk,md,fu=norm(make),norm(model),norm(fuel)
-    base=[r for r in rows if norm(r.get("make"))==mk and norm(r.get("model"))==md]
+    bank=dg_vehicle_bank()
+    if bank.empty:return []
+    def n(v):return re.sub(r"[^a-z0-9]+","",str(v or "").lower())
+    mk,md,fu=n(make),n(model),n(fuel)
+    rows=bank[(bank["make"].map(n)==mk)&(bank["model"].map(n)==md)].copy()
+    if rows.empty:return []
     if fu and fu!="notconfirmed":
-        fuel_rows=[r for r in base if norm(r.get("fuel")) in ("",fu,"notconfirmed")]
-        if fuel_rows: base=fuel_rows
-    exact=[r for r in base if str(r.get("year","")).strip()==str(year)]
-    def specs(rs):
-        return _merge_unique([str(r.get("spec","")).strip() for r in rs
-                              if str(r.get("spec","")).strip() not in ("","Not confirmed","Unknown")])
-    exact_specs=specs(exact)
-    if exact_specs: return exact_specs
-    # Curated/timeless fallback is shown as a suggestion, not asserted as exact-year proof.
-    return specs(base)
+        fr=rows[rows["fuel"].map(n).isin(["",fu,"notconfirmed"])]
+        if not fr.empty:rows=fr
+    exact=rows[rows["year"].astype(str).str.strip()==str(year)]
+    def get(df):
+        if df.empty:return []
+        vals=[str(x).strip() for x in df["spec"].tolist()]
+        return _merge_unique([x for x in vals if x and x.lower() not in ("not confirmed","unknown")])
+    return get(exact) or get(rows)
 
 def dg_year_engines(make,model,year,fuel="",spec=""):
     r=dg_year_rule(make,model,year,fuel)
@@ -3130,6 +3132,19 @@ div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {display:none;}
 </style>
 """,unsafe_allow_html=True)
 
+st.markdown("""
+<style>
+/* V119 unmistakable compact DG navigation */
+div[data-testid="stTabs"] > div:first-child{position:sticky!important;top:0!important;z-index:999!important;background:#fff!important;padding:8px 0!important;border-bottom:1px solid #D0D5DD!important;}
+div[data-testid="stTabs"] [role="tablist"]{display:flex!important;gap:6px!important;overflow-x:auto!important;background:#F2F4F7!important;border:1px solid #E4E7EC!important;border-radius:12px!important;padding:4px!important;}
+div[data-testid="stTabs"] button[role="tab"]{flex:0 0 auto!important;width:auto!important;min-width:auto!important;height:38px!important;padding:0 12px!important;border-radius:8px!important;font-size:12px!important;font-weight:700!important;letter-spacing:0!important;color:#344054!important;background:transparent!important;border:0!important;}
+div[data-testid="stTabs"] button[role="tab"][aria-selected="true"]{background:#101828!important;color:#fff!important;box-shadow:0 1px 2px rgba(16,24,40,.15)!important;}
+div[data-testid="stTabs"] [data-baseweb="tab-highlight"]{display:none!important;}
+@media(max-width:640px){
+ div[data-testid="stTabs"] button[role="tab"]{font-size:11px!important;padding:0 10px!important;height:36px!important;}
+}
+</style>
+""",unsafe_allow_html=True)
 tabs=st.tabs(["APPRAISAL","SAVED APPRAISALS","MARKET","SETTINGS"])
 
 
