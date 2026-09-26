@@ -467,6 +467,8 @@ def dg_issue_evidence_label(row):
         return "GENERAL BUYING CHECK"
     if "mot" in et:
         return "MOT OBSERVED PATTERN"
+    if "mot observed" in et:
+        return "MOT OBSERVED PATTERN"
     if "recall verification" in et:
         return "RECALL CHECK"
     if "recall" in et:
@@ -590,7 +592,7 @@ def dg_display_issue_ok(row):
     if not issue:return False
     et=str((row or {}).get("evidence_type","")).lower()
     conf=str((row or {}).get("confidence","")).lower()
-    if "not a model-specific" in et or "recall verification" in et or conf in ("general","official check"):
+    if "not a model-specific" in et or "recall verification" in et or "mot observed" in et or conf in ("general","official check","statistical"):
         return len(raw)>=12
     bad=("no year is","what matters is","car in front of you","reliability score",
          "count of the faults","popular cars get written","years and engines with",
@@ -806,7 +808,7 @@ small,.dg-caption{color:var(--dg-muted);}
 </style>
 ''', unsafe_allow_html=True)
 st.markdown('<style>\n.dg-section{margin:1.1rem 0 .45rem;font-size:1.22rem;font-weight:800;color:#0f1b33}\n.dg-sub{color:#667085;font-size:.88rem;margin:-.15rem 0 .75rem}\n.dg-intel-card{border:1px solid #e4e7ec;border-left:6px solid #98a2b3;border-radius:14px;padding:15px 16px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04)}\n.dg-intel-card.high{border-left-color:#d92d20;background:#fff7f6}.dg-intel-card.medium{border-left-color:#f79009;background:#fffcf5}.dg-intel-card.low{border-left-color:#12b76a;background:#f6fef9}\n.dg-pill{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;margin-right:8px}\n.dg-pill.high{background:#fee4e2;color:#b42318}.dg-pill.medium{background:#fef0c7;color:#b54708}.dg-pill.low{background:#d1fadf;color:#027a48}\n.dg-issue{font-weight:800;color:#101828;line-height:1.3}.dg-row{margin:.5rem 0;color:#344054;line-height:1.5}.dg-row b{color:#101828}\n.dg-cost{margin-top:.7rem;padding-top:.65rem;border-top:1px solid #eaecf0;font-weight:800;color:#101828}.dg-status{border-radius:12px;padding:11px 13px;background:#f2f4f7;color:#344054;margin:.4rem 0 .8rem;font-size:.9rem}\n</style>', unsafe_allow_html=True)
-st.caption("DG Deal Finder • V116 Specs & Issues Working")
+st.caption("DG Deal Finder • V118 Spec Recovery + Pro Navigation")
 DATA = Path(__file__).with_name("deals.csv")
 
 st.markdown("""
@@ -1205,8 +1207,27 @@ def dg_year_rule(make,model,year,fuel=""):
     return None
 
 def dg_year_specs(make,model,year,fuel=""):
-    r=dg_year_rule(make,model,year,fuel)
-    return list(r["specs"].keys()) if r else []
+    """Offline specs: exact year first; if thin, expose curated model/fuel specs as suggestions."""
+    try:
+        import csv
+        with Path(__file__).with_name("dg_vehicle_bank.csv").open("r",encoding="utf-8-sig",newline="") as f:
+            rows=list(csv.DictReader(f))
+    except Exception:
+        return []
+    def norm(x): return re.sub(r"[^a-z0-9]+","",str(x or "").lower())
+    mk,md,fu=norm(make),norm(model),norm(fuel)
+    base=[r for r in rows if norm(r.get("make"))==mk and norm(r.get("model"))==md]
+    if fu and fu!="notconfirmed":
+        fuel_rows=[r for r in base if norm(r.get("fuel")) in ("",fu,"notconfirmed")]
+        if fuel_rows: base=fuel_rows
+    exact=[r for r in base if str(r.get("year","")).strip()==str(year)]
+    def specs(rs):
+        return _merge_unique([str(r.get("spec","")).strip() for r in rs
+                              if str(r.get("spec","")).strip() not in ("","Not confirmed","Unknown")])
+    exact_specs=specs(exact)
+    if exact_specs: return exact_specs
+    # Curated/timeless fallback is shown as a suggestion, not asserted as exact-year proof.
+    return specs(base)
 
 def dg_year_engines(make,model,year,fuel="",spec=""):
     r=dg_year_rule(make,model,year,fuel)
@@ -3092,6 +3113,23 @@ with st.sidebar.expander("DG UK Vehicle Bank", expanded=False):
                 st.caption(str(_e)[:240])
             st.cache_data.clear()
 
+st.markdown("""
+<style>
+/* V118 professional mobile navigation */
+div[data-testid="stTabs"] > div:first-child {position:sticky;top:0;z-index:90;background:#F6F8FB;padding:8px 8px 10px;border-bottom:1px solid #E4E7EC;}
+div[data-testid="stTabs"] [data-baseweb="tab-list"] {gap:8px;overflow-x:auto;scrollbar-width:none;padding:3px;background:#EAECF0;border-radius:12px;}
+div[data-testid="stTabs"] [data-baseweb="tab-list"]::-webkit-scrollbar{display:none;}
+div[data-testid="stTabs"] button[data-baseweb="tab"] {min-width:max-content;height:42px;padding:0 16px;border-radius:9px;color:#344054;font-size:14px;font-weight:700;letter-spacing:.01em;border:0;background:transparent;}
+div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {background:#101828;color:#fff;box-shadow:0 1px 3px rgba(16,24,40,.18);}
+div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {display:none;}
+@media(max-width:640px){
+  .block-container{padding-top:1rem!important;}
+  div[data-testid="stTabs"] button[data-baseweb="tab"]{font-size:13px;height:40px;padding:0 13px;}
+  h1{font-size:2rem!important;line-height:1.08!important;}
+}
+</style>
+""",unsafe_allow_html=True)
+
 tabs=st.tabs(["APPRAISAL","SAVED APPRAISALS","MARKET","SETTINGS"])
 
 
@@ -3286,7 +3324,7 @@ with tabs[0]:
         st.caption("Fuel → spec → engine → gearbox. Where the free feed has no structured spec, DG supplies clean model trim suggestions instead of dealer names; use the manual override if the exact historical trim is missing.")
 
     if not spec_is_year_constrained and selected_model:
-        st.caption("DG will not invent a derivative. If it cannot verify the spec for this year, leave it unselected.")
+        st.caption("DG shows exact-year specs first. Where exact-year coverage is thin, it offers known model/fuel trims as suggestions — confirm the exact derivative from the advert/V5C.")
     else:
         st.caption("Spec choices are locked to year-specific evidence.")
 
@@ -3363,7 +3401,7 @@ with tabs[0]:
         if taxonomy_verified:
             st.success("Compatibility verified by vehicle taxonomy — incompatible engine, fuel and gearbox choices are removed.")
         else:
-            st.caption("Exact derivative data is limited for this vehicle/year. DG will not treat broad cross-year fallback choices as verified.")
+            st.caption("Exact-year derivative data may be limited. Suggested model/fuel trims are shown to keep the appraisal usable; confirm the exact derivative before buying.")
     cat_mileage=st.number_input("Mileage",0,500000,0,1000,key="catalogue_mileage")
     st.markdown('<div class="section">Source advert</div>',unsafe_allow_html=True)
     source_advert=st.text_area("Paste advert / description",key="source_advert_text",placeholder="Paste the Marketplace or other advert text here. Include its link if you have it.",help="DG keeps the seller wording as context. Confirm the important facts in the appraisal fields.")
